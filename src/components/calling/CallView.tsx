@@ -49,11 +49,24 @@ const VideoTile: React.FC<{
   showPinButton?: boolean;
 }> = ({ participant, isSelf, stream, isSpeaking, onPin, showPinButton = true }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [trackCount, setTrackCount] = useState(0);
 
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(() => {});
     }
+  }, [stream, trackCount]);
+
+  useEffect(() => {
+    if (!stream) return;
+    const handleTracksChanged = () => setTrackCount((c) => c + 1);
+    stream.addEventListener('addtrack', handleTracksChanged);
+    stream.addEventListener('removetrack', handleTracksChanged);
+    return () => {
+      stream.removeEventListener('addtrack', handleTracksChanged);
+      stream.removeEventListener('removetrack', handleTracksChanged);
+    };
   }, [stream]);
 
   const hasVideo =

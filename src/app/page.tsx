@@ -200,6 +200,7 @@ export default function LunarisSanctuaryApp() {
         setCurrentScreen('dashboard');
       } else if (action === 'accept') {
         setOutgoingCall(null);
+        setCurrentScreen('active-call');
         if (webrtcServiceRef.current) {
           try {
             const offer = await webrtcServiceRef.current.createCallOffer();
@@ -366,14 +367,22 @@ export default function LunarisSanctuaryApp() {
     }
   }, [currentUser, activePeer, handleIncomingCallSignal]);
 
-  // Periodic polling for real-time messages
+  // Periodic polling for real-time messages & call signaling
   useEffect(() => {
     if (!currentUser) return;
+    const isCallActive = !!(
+      outgoingCall ||
+      incomingCall ||
+      activeCallState ||
+      currentScreen === 'active-call' ||
+      currentScreen === 'call-lobby'
+    );
+    const intervalTime = isCallActive ? 800 : 2500;
     const interval = setInterval(() => {
       pollRelayPackets();
-    }, 2500);
+    }, intervalTime);
     return () => clearInterval(interval);
-  }, [currentUser, pollRelayPackets]);
+  }, [currentUser, pollRelayPackets, outgoingCall, incomingCall, activeCallState, currentScreen]);
 
   // User Logout & Lock Session
   const handleLogout = () => {
@@ -759,12 +768,13 @@ export default function LunarisSanctuaryApp() {
   }) => {
     if (!currentUser) return;
 
+    const targetPeerId = callLobbyPeer ? callLobbyPeer.personalId : '';
     const webrtc = new WebRTCService({
       onLocalStream: (s) => setLocalStream(s),
       onRemoteStream: (s) => setRemoteStream(s),
       onSendSignal: (sig) => {
-        if (callLobbyPeer) {
-          sendCallSignal(callLobbyPeer.personalId, sig);
+        if (targetPeerId) {
+          sendCallSignal(targetPeerId, sig);
         }
       },
     });
@@ -831,6 +841,7 @@ export default function LunarisSanctuaryApp() {
         inCallChatOpen: false,
         pinnedParticipantId: null,
       });
+      setCurrentScreen('active-call');
     } else {
       // Standalone Google Meet style room
       setActiveCallState({
@@ -1259,7 +1270,7 @@ export default function LunarisSanctuaryApp() {
       )}
 
       {/* Outgoing Calling Modal */}
-      {outgoingCall && currentScreen !== 'active-call' && (
+      {outgoingCall && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in">
           <div className="bg-[#1E201D] text-[#F0EFEA] border border-white/20 rounded-3xl w-full max-w-sm p-6 shadow-2xl text-center flex flex-col items-center">
             <div className="w-20 h-20 rounded-full bg-white/10 flex items-center justify-center mb-4 relative">

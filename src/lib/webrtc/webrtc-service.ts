@@ -100,16 +100,19 @@ export class WebRTCService {
 
     // Listen for incoming remote tracks from peer
     pc.ontrack = (event) => {
+      let streamToReport = this.remoteStream;
       if (event.streams && event.streams[0]) {
         this.remoteStream = event.streams[0];
-        if (this.handlers.onRemoteStream) {
-          this.handlers.onRemoteStream(event.streams[0]);
-        }
+        streamToReport = event.streams[0];
       } else if (event.track) {
-        this.remoteStream?.addTrack(event.track);
-        if (this.handlers.onRemoteStream && this.remoteStream) {
-          this.handlers.onRemoteStream(this.remoteStream);
+        if (!this.remoteStream) {
+          this.remoteStream = new MediaStream();
         }
+        this.remoteStream.addTrack(event.track);
+        streamToReport = new MediaStream(this.remoteStream.getTracks());
+      }
+      if (this.handlers.onRemoteStream && streamToReport) {
+        this.handlers.onRemoteStream(streamToReport);
       }
     };
 
