@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+:root {
+  /* Arca Brand Palette */
+  --arca-green-gray: #A9ABA8;
+  --arca-neutral-gray: #CBCCC7;
+  --arca-soft-ivory: #E0E0D5;
+  --arca-warm-beige: #D0CABA;
+  --arca-deep-taupe: #B8AB90;
+
+  /* Refined shades for text, borders, and interaction states */
+  --arca-bg: #EAEAE0;
+  --arca-surface: #E0E0D5;
+  --arca-surface-elevated: #F2F2EB;
+  --arca-surface-subtle: #D8D8CC;
+  --arca-card-border: #CBCCC7;
+  --arca-border-strong: #B8AB90;
+  
+  --arca-text-primary: #1C1E1B;
+  --arca-text-secondary: #4A4E47;
+  --arca-text-muted: #6E746A;
+  --arca-text-inverse: #F8F8F4;
+
+  --arca-accent-primary: #525C51;
+  --arca-accent-hover: #434B42;
+  --arca-accent-light: #A9ABA8;
+  --arca-accent-pill: #D0CABA;
+
+  --arca-danger: #8E4B4B;
+  --arca-danger-bg: #EBDADA;
+  --arca-success: #476B4D;
+  --arca-success-bg: #DCE5DD;
+
+  --arca-focus-ring: #525C51;
+}
+
+[data-theme="dark"] {
+  --arca-bg: #151614;
+  --arca-surface: #1E201D;
+  --arca-surface-elevated: #282B26;
+  --arca-surface-subtle: #232521;
+  --arca-card-border: #383B34;
+  --arca-border-strong: #B8AB90;
+  
+  --arca-text-primary: #F0EFEA;
+  --arca-text-secondary: #CBCCC7;
+  --arca-text-muted: #A9ABA8;
+  --arca-text-inverse: #1C1E1B;
+
+  --arca-accent-primary: #A9ABA8;
+  --arca-accent-hover: #CBCCC7;
+  --arca-accent-light: #525C51;
+  --arca-accent-pill: #282B26;
+
+  --arca-danger: #E28888;
+  --arca-danger-bg: #382424;
+  --arca-success: #8EBA94;
+  --arca-success-bg: #223325;
+
+  --arca-focus-ring: #CBCCC7;
+}
+
+body {
+  background-color: var(--arca-bg);
+  color: var(--arca-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--arca-neutral-gray);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--arca-deep-taupe);
+}
+
+/* Accessible focus outlines */
+:focus-visible {
+  outline: 2px solid var(--arca-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Reduce motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

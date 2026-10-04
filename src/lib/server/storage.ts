@@ -1,0 +1,276 @@
+/**
+ * Lunaris In-Memory & Relational Server Store
+ * Implements server-side business rules, connection checks, and ephemeral relay lifecycle.
+ * STRICT PRIVACY AUDIT: Server never inspects, retains, or logs plaintext message content or call media.
+ */
+
+import { EncryptedPacket } from '../crypto/types';
+
+export interface ServerUser {
+  id: string;
+  personalId: string; // e.g. ID:CSDX2007
+  emailHash: string;
+  passwordHash: string;
+  displayName: string;
+  bio: string;
+  avatarId: string;
+  identityKeyPub: string;
+  signedPreKeyPub: string;
+  signedPreKeySig: string;
+  createdAt: number;
+  devices: {
+    id: string;
+    name: string;
+    lastActive: number;
+  }[];
+}
+
+export interface ConnectionRecord {
+  id: string;
+  userIdA: string; // personalId
+  userIdB: string; // personalId
+  initiatorId: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'blocked';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AbuseReportRecord {
+  id: string;
+  reporterId: string;
+  reportedId: string;
+  category: string;
+  notes: string;
+  createdAt: number;
+}
+
+class ServerStorage {
+  private users: Map<string, ServerUser> = new Map(); // personalId -> ServerUser
+  private emailMap: Map<string, string> = new Map(); // emailHash -> personalId
+  private connections: Map<string, ConnectionRecord> = new Map(); // connKey -> ConnectionRecord
+  private ephemeralRelayQueue: EncryptedPacket[] = [];
+  private abuseReports: AbuseReportRecord[] = [];
+
+  constructor() {
+    this.seedDemoUsers();
+    // Periodic ephemeral packet expiration sweep (every 30 seconds)
+    if (typeof setInterval !== 'undefined') {
+      setInterval(() => this.purgeExpiredRelayPackets(), 30000);
+    }
+  }
+
+  private seedDemoUsers() {
+    // Seed initial demo users for testing and instant zero-friction evaluation
+    const demoAlice: ServerUser = {
+      id: 'usr_alice_001',
+      personalId: 'ID:ALIC8821',
+      emailHash: 'hash_alice_demo',
+      passwordHash: 'argon_alice_demo_hash',
+      displayName: 'Alice Vance',
+      bio: 'Researching zero-knowledge systems.',
+      avatarId: 'avatar-1',
+      identityKeyPub: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErvcr9m7t2BHvt7BoX+yFJ/cruR9RwHYEJkNUezkdTEURPeyvjjOEhgduNwgFdxjEjJWXMMAdY7tZn5cp1x72Qg==',
+      signedPreKeyPub: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7zvYSDxX3s1KLEJ0NCHGEBLdpCOKyNFXqd/WLoj8xhqb86oZdzv0opW5BWyhCnLG5AwXnushM4307aUB2KHGwQ==',
+      signedPreKeySig: 'sig_alice_prekey_001',
+      createdAt: Date.now() - 86400000 * 7,
+      devices: [{ id: 'dev_1', name: 'Workstation Chrome (Windows)', lastActive: Date.now() }],
+    };
+
+    const demoBob: ServerUser = {
+      id: 'usr_bob_002',
+      personalId: 'ID:BOBX4492',
+      emailHash: 'hash_bob_demo',
+      passwordHash: 'argon_bob_demo_hash',
+      displayName: 'Bob Miller',
+      bio: 'Privacy advocate & security auditor.',
+      avatarId: 'avatar-2',
+      identityKeyPub: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEK6IGH6+onVpqn82NSYCz3G8900LwexIaAGb4pplhqRrofN/8bRwAvBfwucdiqfez0hM6iSOSq/Xyi/7OT/7gvw==',
+      signedPreKeyPub: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtgIMvS5JWswL6vlxQjVtIqYoN3lDQHrMxpmN2iMxDqBvJvPgGvntadhDR8i1iMS84uca88aoxq0H6fu945pacw==',
+      signedPreKeySig: 'sig_bob_prekey_002',
+      createdAt: Date.now() - 86400000 * 5,
+      devices: [{ id: 'dev_2', name: 'Mobile Safari (iOS)', lastActive: Date.now() }],
+    };
+
+    const demoClara: ServerUser = {
+      id: 'usr_clara_003',
+      personalId: 'ID:CLAR3310',
+      emailHash: 'hash_clara_demo',
+      passwordHash: 'argon_clara_demo_hash',
+      displayName: 'Dr. Clara Sterling',
+      bio: 'Cryptography researcher at Institute for Open Systems.',
+      avatarId: 'avatar-3',
+      identityKeyPub: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuKjYqbdJU/SBV+iqK+TQB/PJkBp1Te8EOC8Kte+wpE88AhVfnD7PRoqGy4yaGq7MZZVsxg/VSLGH+xWXcEtVvw==',
+      signedPreKeyPub: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEshJju8rsh/WIyqQLkII/0VmtKyyHHNN+/65Ru1M5nAn2dL45GD+SeSAWDONWVIK0VLanAHnsgkPRel5A7QSS6Q==',
+      signedPreKeySig: 'sig_clara_prekey_003',
+      createdAt: Date.now() - 86400000 * 3,
+      devices: [{ id: 'dev_3', name: 'Firefox Focus (Linux)', lastActive: Date.now() }],
+    };
+
+    this.registerUser(demoAlice);
+    this.registerUser(demoBob);
+    this.registerUser(demoClara);
+
+    // Initial accepted connection between Alice and Bob
+    this.createConnection(demoAlice.personalId, demoBob.personalId, demoAlice.personalId, 'accepted');
+  }
+
+  // --- User Operations ---
+  public registerUser(user: ServerUser): void {
+    this.users.set(user.personalId, user);
+    this.emailMap.set(user.emailHash, user.personalId);
+  }
+
+  public getUserByPersonalId(personalId: string): ServerUser | undefined {
+    return this.users.get(personalId);
+  }
+
+  public getUserByEmailHash(emailHash: string): ServerUser | undefined {
+    const personalId = this.emailMap.get(emailHash);
+    return personalId ? this.users.get(personalId) : undefined;
+  }
+
+  public deleteUser(personalId: string): void {
+    const user = this.users.get(personalId);
+    if (user) {
+      this.emailMap.delete(user.emailHash);
+      this.users.delete(personalId);
+      // Remove all connections
+      for (const [key, conn] of this.connections.entries()) {
+        if (conn.userIdA === personalId || conn.userIdB === personalId) {
+          this.connections.delete(key);
+        }
+      }
+      // Purge all pending relay packets for this user
+      this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter(
+        (p) => p.recipientId !== personalId && p.senderId !== personalId
+      );
+    }
+  }
+
+  // --- Connections & Pairing ---
+  private getConnectionKey(idA: string, idB: string): string {
+    return idA < idB ? `${idA}:${idB}` : `${idB}:${idA}`;
+  }
+
+  public getConnection(idA: string, idB: string): ConnectionRecord | undefined {
+    return this.connections.get(this.getConnectionKey(idA, idB));
+  }
+
+  public createConnection(
+    idA: string,
+    idB: string,
+    initiatorId: string,
+    status: ConnectionRecord['status'] = 'pending'
+  ): ConnectionRecord {
+    const key = this.getConnectionKey(idA, idB);
+    const existing = this.connections.get(key);
+    if (existing) {
+      existing.status = status;
+      existing.updatedAt = Date.now();
+      return existing;
+    }
+
+    const conn: ConnectionRecord = {
+      id: `conn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      userIdA: idA < idB ? idA : idB,
+      userIdB: idA < idB ? idB : idA,
+      initiatorId,
+      status,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.connections.set(key, conn);
+    return conn;
+  }
+
+  public updateConnectionStatus(
+    idA: string,
+    idB: string,
+    status: ConnectionRecord['status']
+  ): ConnectionRecord | undefined {
+    const key = this.getConnectionKey(idA, idB);
+    const conn = this.connections.get(key);
+    if (conn) {
+      conn.status = status;
+      conn.updatedAt = Date.now();
+    }
+    return conn;
+  }
+
+  public removeConnection(idA: string, idB: string): boolean {
+    const key = this.getConnectionKey(idA, idB);
+    return this.connections.delete(key);
+  }
+
+  public getConnectionsForUser(personalId: string): ConnectionRecord[] {
+    const result: ConnectionRecord[] = [];
+    for (const conn of this.connections.values()) {
+      if (conn.userIdA === personalId || conn.userIdB === personalId) {
+        result.push(conn);
+      }
+    }
+    return result;
+  }
+
+  // --- Ephemeral Relay Queue ---
+  public enqueueRelayPacket(packet: EncryptedPacket): boolean {
+    // Enforcement: packet must only be queued between accepted connections
+    const conn = this.getConnection(packet.senderId, packet.recipientId);
+    if (!conn || conn.status !== 'accepted') {
+      return false; // Connection not accepted
+    }
+
+    this.ephemeralRelayQueue.push(packet);
+    return true;
+  }
+
+  public dequeueRelayPacketsForRecipient(recipientPersonalId: string): EncryptedPacket[] {
+    this.purgeExpiredRelayPackets();
+    const packets = this.ephemeralRelayQueue.filter((p) => p.recipientId === recipientPersonalId);
+    // Remove retrieved packets immediately upon delivery poll
+    this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter((p) => p.recipientId !== recipientPersonalId);
+    return packets;
+  }
+
+  public acknowledgePacket(packetId: string): void {
+    this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter((p) => p.packetId !== packetId);
+  }
+
+  public purgeExpiredRelayPackets(): number {
+    const now = Date.now();
+    const initialCount = this.ephemeralRelayQueue.length;
+    this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter((p) => p.expiresAt > now);
+    return initialCount - this.ephemeralRelayQueue.length;
+  }
+
+  public clearChatRelayPackets(idA: string, idB: string): void {
+    this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter(
+      (p) =>
+        !(
+          (p.senderId === idA && p.recipientId === idB) ||
+          (p.senderId === idB && p.recipientId === idA)
+        )
+    );
+  }
+
+  // --- Abuse Reporting ---
+  public fileAbuseReport(reporterId: string, reportedId: string, category: string, notes: string): AbuseReportRecord {
+    const report: AbuseReportRecord = {
+      id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      reporterId,
+      reportedId,
+      category,
+      notes: notes.slice(0, 500),
+      createdAt: Date.now(),
+    };
+    this.abuseReports.push(report);
+    return report;
+  }
+}
+
+// Global singleton across server invocations in development
+const globalForStorage = globalThis as unknown as { serverStorage?: ServerStorage };
+export const serverStorage = globalForStorage.serverStorage || new ServerStorage();
+if (process.env.NODE_ENV !== 'production') {
+  globalForStorage.serverStorage = serverStorage;
+}
