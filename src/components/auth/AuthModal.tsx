@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Shield, Lock, Mail, User, Eye, EyeOff, X, KeyRound, CheckCircle2 } from 'lucide-react';
 import { generatePersonalId } from '@/lib/crypto/id-generator';
 import { generateECDHKeyPair, exportPublicKey, exportPrivateKey } from '@/lib/crypto/primitives';
+import { vault } from '@/lib/storage/vault';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -48,6 +49,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         const identityKeyPub = await exportPublicKey(identityPair.publicKey);
         const signedPreKeyPub = await exportPublicKey(signedPreKeyPair.publicKey);
+        const identityKeyPriv = await exportPrivateKey(identityPair.privateKey);
+        const signedPreKeyPriv = await exportPrivateKey(signedPreKeyPair.privateKey);
 
         const res = await fetch('/api/auth/register', {
           method: 'POST',
@@ -64,6 +67,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Registration failed');
+
+        // Securely preserve the device's private keys in local client vault
+        vault.saveUserKeyBundle(data.user.personalId, {
+          identityKeyPriv,
+          signedPreKeyPriv,
+        });
 
         onSuccess(data.user, data.token);
         onClose();

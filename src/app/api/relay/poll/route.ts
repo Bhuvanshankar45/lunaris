@@ -10,7 +10,7 @@ export async function GET(request: Request) {
   }
 
   // Dequeue and purge delivered packets immediately upon fetch
-  const deliveredPackets = serverStorage.dequeueRelayPacketsForRecipient(recipientId);
+  const deliveredPackets = await serverStorage.dequeueRelayPacketsAsync(recipientId);
 
   return NextResponse.json({
     packets: deliveredPackets,

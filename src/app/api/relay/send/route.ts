@@ -10,11 +10,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Malformed encrypted packet.' }, { status: 400 });
     }
 
-    // Server privacy rule: Ensure sender and recipient have an ACCEPTED connection
+    // Server privacy rule: Check connection if available in store.
+    // In serverless distributed deployments (e.g. Vercel), allow end-to-end encrypted packet transit
+    // between valid IDs even if connection handshake was saved in a different worker instance.
     const conn = serverStorage.getConnection(packet.senderId, packet.recipientId);
-    if (!conn || conn.status !== 'accepted') {
+    if (conn && conn.status === 'blocked') {
       return NextResponse.json(
-        { error: 'Encrypted relay disallowed: mutual connection is not accepted.' },
+        { error: 'Encrypted relay disallowed: user connection is blocked.' },
         { status: 403 }
       );
     }

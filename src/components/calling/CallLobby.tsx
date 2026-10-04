@@ -20,7 +20,7 @@ interface CallLobbyProps {
   mode: CallMode;
   peerContact: PeerContact | null;
   roomCode: string;
-  onJoin: (options: { isMuted: boolean; isVideoOff: boolean }) => void;
+  onJoin: (options: { isMuted: boolean; isVideoOff: boolean; stream?: MediaStream }) => void;
   onCancel: () => void;
 }
 
@@ -39,6 +39,7 @@ export const CallLobby: React.FC<CallLobbyProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const isJoiningRef = useRef<boolean>(false);
 
   // Initialize media devices
   useEffect(() => {
@@ -89,7 +90,7 @@ export const CallLobby: React.FC<CallLobbyProps> = ({
     initMedia();
 
     return () => {
-      if (localStreamRef.current) {
+      if (localStreamRef.current && !isJoiningRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
       }
       if (animationFrameRef.current) {
@@ -237,7 +238,14 @@ export const CallLobby: React.FC<CallLobbyProps> = ({
             <div className="space-y-3">
               <button
                 type="button"
-                onClick={() => onJoin({ isMuted, isVideoOff })}
+                onClick={() => {
+                  isJoiningRef.current = true;
+                  onJoin({
+                    isMuted,
+                    isVideoOff,
+                    stream: localStreamRef.current || undefined,
+                  });
+                }}
                 className="w-full py-3.5 px-6 rounded-2xl bg-[#525C51] text-[#F8F8F4] text-sm font-semibold hover:bg-[#434B42] transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
                 <span>Join Call Now</span>

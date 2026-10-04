@@ -35,7 +35,93 @@ interface CallViewProps {
   safetyNumber: string;
   isSafetyVerified: boolean;
   onToggleSafetyVerified: (v: boolean) => void;
+  localStream?: MediaStream | null;
+  remoteStream?: MediaStream | null;
+  currentUserId?: string;
 }
+
+const VideoTile: React.FC<{
+  participant: CallParticipant;
+  isSelf: boolean;
+  stream: MediaStream | null | undefined;
+  isSpeaking: boolean;
+  onPin?: () => void;
+  showPinButton?: boolean;
+}> = ({ participant, isSelf, stream, isSpeaking, onPin, showPinButton = true }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  const hasVideo =
+    stream &&
+    !participant.isVideoOff &&
+    stream.getVideoTracks().length > 0 &&
+    stream.getVideoTracks()[0].enabled;
+
+  return (
+    <div
+      className={`rounded-3xl bg-[#1E201D] relative overflow-hidden flex items-center justify-center transition-all shadow-lg w-full h-full ${
+        isSpeaking
+          ? 'border-2 border-[#8EBA94] ring-4 ring-[#8EBA94]/20'
+          : 'border border-white/10'
+      }`}
+    >
+      {/* Real HTML5 Video element */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={isSelf}
+        className={`w-full h-full object-cover ${isSelf ? 'transform -scale-x-100' : ''} ${
+          hasVideo ? 'block' : 'hidden'
+        }`}
+      />
+
+      {/* Fallback Avatar when camera is turned off */}
+      {!hasVideo && (
+        <div className="flex flex-col items-center p-4">
+          <Avatar name={participant.displayName} size="xl" />
+          <p className="mt-3 font-semibold text-base text-[#F0EFEA]">
+            {participant.displayName} {isSelf && '(You)'}
+          </p>
+          <span className="text-xs text-[#A9ABA8] font-mono">{participant.personalId}</span>
+          <span className="mt-2 text-[11px] px-2.5 py-0.5 rounded-full bg-white/10 text-[#CBCCC7]">
+            {participant.isVideoOff ? 'Camera Off' : 'Waiting for Video...'}
+          </span>
+        </div>
+      )}
+
+      {/* Pin button on hover */}
+      {showPinButton && onPin && (
+        <button
+          onClick={onPin}
+          className="absolute top-3 right-3 p-2 rounded-xl bg-black/40 hover:bg-black/70 text-white backdrop-blur-xs opacity-0 hover:opacity-100 transition-opacity"
+          title="Pin to main spotlight"
+        >
+          <Pin className="w-3.5 h-3.5" />
+        </button>
+      )}
+
+      {/* Tile Bottom Info Badge */}
+      <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs">
+        <span className="font-medium text-[#F0EFEA] truncate max-w-[140px]">
+          {participant.displayName} {isSelf && '(You)'}
+        </span>
+        {participant.isMuted ? (
+          <MicOff className="w-3.5 h-3.5 text-[#E28888]" />
+        ) : isSpeaking ? (
+          <span className="w-2 h-2 rounded-full bg-[#8EBA94] animate-pulse" />
+        ) : (
+          <Mic className="w-3.5 h-3.5 text-[#8EBA94]" />
+        )}
+      </div>
+    </div>
+  );
+};
 
 export const CallView: React.FC<CallViewProps> = ({
   callState,
@@ -49,6 +135,9 @@ export const CallView: React.FC<CallViewProps> = ({
   safetyNumber,
   isSafetyVerified,
   onToggleSafetyVerified,
+  localStream,
+  remoteStream,
+  currentUserId,
 }) => {
   const [callDuration, setCallDuration] = useState('00:00');
   const [showChatDrawer, setShowChatDrawer] = useState(false);
@@ -133,61 +222,58 @@ export const CallView: React.FC<CallViewProps> = ({
             /* PINNED / SPOTLIGHT MODE */
             <div className="flex-1 flex flex-col lg:flex-row gap-3 min-h-0">
               {/* Large Spotlight Participant */}
-              <div className="flex-1 rounded-3xl bg-[#1E201D] border-2 border-[#B8AB90] overflow-hidden relative shadow-2xl flex items-center justify-center">
-                {pinnedParticipant.isVideoOff ? (
-                  <div className="flex flex-col items-center">
-                    <Avatar name={pinnedParticipant.displayName} size="xl" />
-                    <p className="mt-3 font-semibold text-base text-[#F0EFEA]">
-                      {pinnedParticipant.displayName}
-                    </p>
-                    <span className="text-xs text-[#A9ABA8] font-mono">
-                      {pinnedParticipant.personalId}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="w-full h-full bg-[#282B26] flex items-center justify-center relative">
-                    <div className="absolute inset-0 bg-radial from-transparent to-black/30" />
-                    <div className="flex flex-col items-center">
-                      <Avatar name={pinnedParticipant.displayName} size="lg" />
-                      <p className="mt-2 font-medium text-sm text-[#CBCCC7]">
-                        {pinnedParticipant.displayName} (Video Stream)
-                      </p>
-                    </div>
-                  </div>
-                )}
+              <div className="flex-1 rounded-3xl overflow-hidden relative shadow-2xl flex items-center justify-center min-h-[300px]">
+                {(() => {
+                  const isSelf =
+                    pinnedParticipant.personalId === currentUserId ||
+                    pinnedParticipant.id === currentUserId;
+                  const stream = isSelf ? localStream : remoteStream;
+                  return (
+                    <VideoTile
+                      participant={pinnedParticipant}
+                      isSelf={isSelf}
+                      stream={stream}
+                      isSpeaking={activeSpeakerIndex === 0}
+                      onPin={() => onPinParticipant(null)}
+                      showPinButton={false}
+                    />
+                  );
+                })()}
 
                 {/* Unpin button */}
                 <button
                   onClick={() => onPinParticipant(null)}
-                  className="absolute top-4 right-4 p-2 rounded-xl bg-black/60 hover:bg-black/80 text-white backdrop-blur-xs border border-white/20 transition-all"
+                  className="absolute top-4 right-4 p-2 rounded-xl bg-black/60 hover:bg-black/80 text-white backdrop-blur-xs border border-white/20 transition-all z-10"
                   title="Unpin participant"
                 >
                   <PinOff className="w-4 h-4" />
                 </button>
-
-                {/* Bottom Tile Info */}
-                <div className="absolute bottom-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/60 backdrop-blur-md border border-white/20 text-xs">
-                  <span className="font-medium text-[#F0EFEA]">{pinnedParticipant.displayName}</span>
-                  {pinnedParticipant.isMuted && <MicOff className="w-3.5 h-3.5 text-[#E28888]" />}
-                </div>
               </div>
 
               {/* Side Filmstrip of other participants */}
               <div className="lg:w-64 flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto shrink-0">
                 {callState.participants
                   .filter((p) => p.id !== pinnedParticipant.id)
-                  .map((p) => (
-                    <div
-                      key={p.id}
-                      onClick={() => onPinParticipant(p.id)}
-                      className="w-44 lg:w-full h-28 lg:h-36 rounded-2xl bg-[#1E201D] border border-white/10 relative overflow-hidden flex items-center justify-center cursor-pointer hover:border-[#B8AB90] transition-colors shrink-0"
-                    >
-                      <Avatar name={p.displayName} size="md" />
-                      <span className="absolute bottom-2 left-2 text-[11px] font-medium text-white px-2 py-0.5 rounded-md bg-black/60 truncate max-w-[80%]">
-                        {p.displayName}
-                      </span>
-                    </div>
-                  ))}
+                  .map((p) => {
+                    const isSelf =
+                      p.personalId === currentUserId || p.id === currentUserId;
+                    const stream = isSelf ? localStream : remoteStream;
+                    return (
+                      <div
+                        key={p.id}
+                        onClick={() => onPinParticipant(p.id)}
+                        className="w-44 lg:w-full h-28 lg:h-36 rounded-2xl overflow-hidden relative cursor-pointer hover:border-[#8EBA94] border border-white/10 transition-colors shrink-0"
+                      >
+                        <VideoTile
+                          participant={p}
+                          isSelf={isSelf}
+                          stream={stream}
+                          isSpeaking={false}
+                          showPinButton={false}
+                        />
+                      </div>
+                    );
+                  })}
               </div>
             </div>
           ) : (
@@ -205,57 +291,19 @@ export const CallView: React.FC<CallViewProps> = ({
             >
               {callState.participants.map((participant, index) => {
                 const isSpeaking = index === activeSpeakerIndex;
+                const isSelf =
+                  participant.personalId === currentUserId ||
+                  participant.id === currentUserId;
+                const stream = isSelf ? localStream : remoteStream;
                 return (
-                  <div
+                  <VideoTile
                     key={participant.id}
-                    className={`rounded-3xl bg-[#1E201D] relative overflow-hidden flex items-center justify-center transition-all shadow-lg ${
-                      isSpeaking
-                        ? 'border-2 border-[#A9ABA8] ring-4 ring-[#A9ABA8]/20'
-                        : 'border border-white/10'
-                    }`}
-                  >
-                    {participant.isVideoOff ? (
-                      <div className="flex flex-col items-center p-4">
-                        <Avatar name={participant.displayName} size="lg" />
-                        <p className="mt-2.5 font-semibold text-sm text-[#F0EFEA]">
-                          {participant.displayName}
-                        </p>
-                        <span className="text-[11px] font-mono text-[#A9ABA8]">
-                          {participant.personalId}
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="w-full h-full bg-[#282B26] flex items-center justify-center relative">
-                        <div className="flex flex-col items-center">
-                          <Avatar name={participant.displayName} size="md" />
-                          <p className="mt-2 text-xs font-medium text-[#CBCCC7]">
-                            {participant.displayName}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Pin button on hover */}
-                    <button
-                      onClick={() => onPinParticipant(participant.id)}
-                      className="absolute top-3 right-3 p-2 rounded-xl bg-black/40 hover:bg-black/70 text-white backdrop-blur-xs opacity-0 hover:opacity-100 transition-opacity"
-                      title="Pin to main spotlight"
-                    >
-                      <Pin className="w-3.5 h-3.5" />
-                    </button>
-
-                    {/* Tile Bottom Info Badge */}
-                    <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs">
-                      <span className="font-medium text-[#F0EFEA] truncate max-w-[120px]">
-                        {participant.displayName}
-                      </span>
-                      {participant.isMuted ? (
-                        <MicOff className="w-3.5 h-3.5 text-[#E28888]" />
-                      ) : isSpeaking ? (
-                        <span className="w-2 h-2 rounded-full bg-[#8EBA94] animate-pulse" />
-                      ) : null}
-                    </div>
-                  </div>
+                    participant={participant}
+                    isSelf={isSelf}
+                    stream={stream}
+                    isSpeaking={isSpeaking}
+                    onPin={() => onPinParticipant(participant.id)}
+                  />
                 );
               })}
             </div>

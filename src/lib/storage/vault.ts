@@ -212,6 +212,30 @@ class LocalVault {
     storage.setItem(`${STORAGE_KEYS.SAFETY_NUMBERS}_${peerId}`, String(verified));
   }
 
+  // --- User Private Cryptographic Key Bundles ---
+  public saveUserKeyBundle(personalId: string, bundle: { identityKeyPriv: string; signedPreKeyPriv: string }): void {
+    const storage = this.getStorage();
+    if (!storage) return;
+    storage.setItem(`${STORAGE_KEYS.IDENTITY_KEYS}_${personalId}`, JSON.stringify(bundle));
+  }
+
+  public getUserKeyBundle(personalId: string): { identityKeyPriv: string; signedPreKeyPriv: string } | null {
+    const storage = this.getStorage();
+    if (!storage) return null;
+    const raw = storage.getItem(`${STORAGE_KEYS.IDENTITY_KEYS}_${personalId}`);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  public getSignedPreKeyPriv(personalId: string): string | null {
+    const bundle = this.getUserKeyBundle(personalId);
+    return bundle ? bundle.signedPreKeyPriv : null;
+  }
+
   /**
    * Cryptographic shredding: wipe entire device local storage
    */

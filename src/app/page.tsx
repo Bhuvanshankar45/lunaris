@@ -16,13 +16,15 @@ import { SettingsView } from '@/components/settings/SettingsView';
 import { SendRequestModal } from '@/components/ui/Modals';
 
 import { AppScreen, CallMode, PeerContact, UserProfile, ActiveCallState } from '@/types';
-import { StoredLocalMessage } from '@/lib/crypto/types';
+import { StoredLocalMessage, EncryptedPacket } from '@/lib/crypto/types';
 import { vault, DEFAULT_SETTINGS, UserSettings } from '@/lib/storage/vault';
 import { DoubleRatchetSession } from '@/lib/crypto/double-ratchet';
 import { deriveSafetyNumber } from '@/lib/crypto/primitives';
 import { encryptFileForRelay, decryptFileFromRelay } from '@/lib/crypto/file-encryption';
 import { DEMO_PREKEYS_PRIV } from '@/lib/crypto/demo-keys';
-import { WifiOff, Radio } from 'lucide-react';
+import { WifiOff, Radio, Phone, PhoneOff, Video, VideoOff } from 'lucide-react';
+import { Avatar } from '@/components/ui/Avatar';
+import { WebRTCService } from '@/lib/webrtc/webrtc-service';
 
 export default function LunarisSanctuaryApp() {
   // App Navigation & Session
@@ -58,6 +60,20 @@ export default function LunarisSanctuaryApp() {
   const [callLobbyPeer, setCallLobbyPeer] = useState<PeerContact | null>(null);
   const [callLobbyMode, setCallLobbyMode] = useState<CallMode>('video-1to1');
   const [activeCallState, setActiveCallState] = useState<ActiveCallState | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [incomingCall, setIncomingCall] = useState<{
+    fromId: string;
+    fromName: string;
+    mode: CallMode;
+    roomCode: string;
+  } | null>(null);
+  const [outgoingCall, setOutgoingCall] = useState<{
+    toId: string;
+    toName: string;
+    mode: CallMode;
+  } | null>(null);
+  const webrtcServiceRef = useRef<WebRTCService | null>(null);
   const [inCallMessages, setInCallMessages] = useState<
     { id: string; senderName: string; text: string; time: string }[]
   >([]);
@@ -120,6 +136,105 @@ export default function LunarisSanctuaryApp() {
     }
   }, []);
 
+  // Send call signaling packet via relay
+  const sendCallSignal = useCallback(
+    async (toPeerId: string, signalPayload: any) => {
+      if (!currentUser) return;
+      const jsonStr = JSON.stringify(signalPayload);
+      const packet: EncryptedPacket = {
+        packetId: `sig_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        senderId: currentUser.personalId,
+        recipientId: toPeerId,
+        type: 'signal_call',
+        ephemeralPublicKey: '',
+        sequenceNumber: 0,
+        previousChainLength: 0,
+        iv: 'call_sig_iv',
+        ciphertext: btoa(unescape(encodeURIComponent(jsonStr))),
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60000,
+      };
+
+      try {
+        await fetch('/api/relay/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(packet),
+        });
+      } catch (err) {
+        console.warn('Call signal relay error:', err);
+      }
+    },
+    [currentUser]
+  );
+
+  // Incoming Call Signaling handler
+  const handleIncomingCallSignal = useCallback(
+    async (fromId: string, payload: any) => {
+      const action = payload.callAction;
+      console.log('Incoming call signal:', action, 'from:', fromId);
+
+      if (action === 'invite') {
+        setIncomingCall({
+          fromId,
+          fromName: payload.fromName || fromId,
+          mode: payload.mode || 'video-1to1',
+          roomCode: payload.roomCode || 'lunaris_call',
+        });
+      } else if (action === 'decline') {
+        alert('The peer declined the call.');
+        setOutgoingCall(null);
+        webrtcServiceRef.current?.endCall();
+        webrtcServiceRef.current = null;
+        setLocalStream(null);
+        setRemoteStream(null);
+        setActiveCallState(null);
+        setCurrentScreen('dashboard');
+      } else if (action === 'accept') {
+        setOutgoingCall(null);
+        if (webrtcServiceRef.current) {
+          try {
+            const offer = await webrtcServiceRef.current.createCallOffer();
+            sendCallSignal(fromId, { callAction: 'sdp_offer', sdp: offer });
+          } catch (e) {
+            console.error('Failed to create call offer:', e);
+          }
+        }
+      } else if (action === 'sdp_offer') {
+        if (webrtcServiceRef.current && payload.sdp) {
+          try {
+            const answer = await webrtcServiceRef.current.handleCallOffer(payload.sdp);
+            sendCallSignal(fromId, { callAction: 'sdp_answer', sdp: answer });
+          } catch (e) {
+            console.error('Failed to handle SDP offer:', e);
+          }
+        }
+      } else if (action === 'sdp_answer') {
+        if (webrtcServiceRef.current && payload.sdp) {
+          try {
+            await webrtcServiceRef.current.handleCallAnswer(payload.sdp);
+          } catch (e) {
+            console.error('Failed to handle SDP answer:', e);
+          }
+        }
+      } else if (action === 'ice_candidate') {
+        if (webrtcServiceRef.current && payload.candidate) {
+          await webrtcServiceRef.current.addIceCandidate(payload.candidate);
+        }
+      } else if (action === 'hangup') {
+        webrtcServiceRef.current?.endCall();
+        webrtcServiceRef.current = null;
+        setLocalStream(null);
+        setRemoteStream(null);
+        setIncomingCall(null);
+        setOutgoingCall(null);
+        setActiveCallState(null);
+        setCurrentScreen('dashboard');
+      }
+    },
+    [sendCallSignal]
+  );
+
   // Poll for incoming encrypted relay packets
   const pollRelayPackets = useCallback(async () => {
     if (!currentUser) return;
@@ -129,6 +244,29 @@ export default function LunarisSanctuaryApp() {
         const data = await res.json();
         if (data.packets && data.packets.length > 0) {
           for (const packet of data.packets) {
+            // Check for direct WebRTC call signaling packet
+            if (packet.type === 'signal_call') {
+              try {
+                let payload: any = null;
+                try {
+                  const decoded = decodeURIComponent(escape(atob(packet.ciphertext)));
+                  payload = JSON.parse(decoded);
+                } catch {
+                  try {
+                    payload = JSON.parse(packet.ciphertext);
+                  } catch {
+                    payload = null;
+                  }
+                }
+                if (payload && payload.callAction) {
+                  handleIncomingCallSignal(packet.senderId, payload);
+                }
+              } catch (err) {
+                console.warn('Signal call parse error:', err);
+              }
+              continue;
+            }
+
             // Find or get Double Ratchet session
             let session = ratchetSessionsRef.current.get(packet.senderId);
             if (!session) {
@@ -137,7 +275,9 @@ export default function LunarisSanctuaryApp() {
                 session = new DoubleRatchetSession(saved);
                 ratchetSessionsRef.current.set(packet.senderId, session);
               } else {
-                const privKey = DEMO_PREKEYS_PRIV[currentUser.personalId];
+                const privKey =
+                  vault.getSignedPreKeyPriv(currentUser.personalId) ||
+                  DEMO_PREKEYS_PRIV[currentUser.personalId];
                 if (privKey && packet.ephemeralPublicKey) {
                   try {
                     session = await DoubleRatchetSession.respondToSession(
@@ -159,6 +299,12 @@ export default function LunarisSanctuaryApp() {
               try {
                 const plaintext = await session.decrypt(packet);
                 vault.saveSession(packet.senderId, session.getState());
+
+                // If this is an in-band call action
+                if (plaintext && (plaintext as any).callAction) {
+                  handleIncomingCallSignal(packet.senderId, plaintext as any);
+                  continue;
+                }
 
                 // If media is attached, decrypt file blob locally
                 let localFile = undefined;
@@ -210,7 +356,7 @@ export default function LunarisSanctuaryApp() {
     } catch {
       // offline or network hiccup
     }
-  }, [currentUser, activePeer]);
+  }, [currentUser, activePeer, handleIncomingCallSignal]);
 
   // Periodic polling for real-time messages
   useEffect(() => {
@@ -608,77 +754,241 @@ export default function LunarisSanctuaryApp() {
     setCurrentScreen('call-lobby');
   };
 
-  const handleJoinCallFromLobby = ({ isMuted, isVideoOff }: { isMuted: boolean; isVideoOff: boolean }) => {
+  const handleJoinCallFromLobby = async ({
+    isMuted,
+    isVideoOff,
+    stream,
+  }: {
+    isMuted: boolean;
+    isVideoOff: boolean;
+    stream?: MediaStream;
+  }) => {
     if (!currentUser) return;
 
-    const participants = [];
-    // Self
-    participants.push({
-      id: currentUser.personalId,
-      personalId: currentUser.personalId,
-      displayName: currentUser.displayName,
-      avatarId: currentUser.avatarId,
-      isMuted,
-      isVideoOff,
-      isSpeaking: false,
+    const webrtc = new WebRTCService({
+      onLocalStream: (s) => setLocalStream(s),
+      onRemoteStream: (s) => setRemoteStream(s),
+      onSendSignal: (sig) => {
+        if (callLobbyPeer) {
+          sendCallSignal(callLobbyPeer.personalId, sig);
+        }
+      },
     });
+    webrtcServiceRef.current = webrtc;
+
+    let activeStream = stream;
+    if (!activeStream) {
+      try {
+        activeStream = await webrtc.startLocalMedia({
+          video: !isVideoOff,
+          audio: true,
+        });
+      } catch (err: any) {
+        console.warn('Failed to start local media:', err);
+      }
+    } else {
+      (webrtc as any).localStream = activeStream;
+    }
+    setLocalStream(activeStream || null);
 
     if (callLobbyPeer) {
-      participants.push({
-        id: callLobbyPeer.personalId,
-        personalId: callLobbyPeer.personalId,
-        displayName: callLobbyPeer.displayName,
-        avatarId: callLobbyPeer.avatarId,
-        isMuted: false,
-        isVideoOff: callLobbyMode === 'voice-1to1',
-        isSpeaking: true,
+      // 1-on-1 Call with peer: Notify peer and display Outgoing Calling view
+      setOutgoingCall({
+        toId: callLobbyPeer.personalId,
+        toName: callLobbyPeer.displayName,
+        mode: callLobbyMode,
+      });
+
+      sendCallSignal(callLobbyPeer.personalId, {
+        callAction: 'invite',
+        fromName: currentUser.displayName,
+        mode: callLobbyMode,
+      });
+
+      setActiveCallState({
+        callId: `call_${Date.now()}`,
+        mode: callLobbyMode,
+        roomTitle: `Lunaris Call: ${callLobbyPeer.displayName}`,
+        initiatorId: currentUser.personalId,
+        participants: [
+          {
+            id: currentUser.personalId,
+            personalId: currentUser.personalId,
+            displayName: currentUser.displayName,
+            avatarId: currentUser.avatarId,
+            isMuted,
+            isVideoOff,
+            isSpeaking: false,
+          },
+          {
+            id: callLobbyPeer.personalId,
+            personalId: callLobbyPeer.personalId,
+            displayName: callLobbyPeer.displayName,
+            avatarId: callLobbyPeer.avatarId,
+            isMuted: false,
+            isVideoOff: callLobbyMode === 'voice-1to1',
+            isSpeaking: false,
+          },
+        ],
+        startTime: Date.now(),
+        isMuted,
+        isVideoOff,
+        isScreenSharing: false,
+        inCallChatOpen: false,
+        pinnedParticipantId: null,
       });
     } else {
-      // Simulate group room participants (Google Meet style)
-      participants.push(
-        {
-          id: 'usr_clara',
-          personalId: 'ID:CLAR3310',
-          displayName: 'Dr. Clara Sterling',
-          avatarId: 'avatar-3',
-          isMuted: false,
-          isVideoOff: false,
-          isSpeaking: true,
-        },
-        {
-          id: 'usr_bob',
-          personalId: 'ID:BOBX4492',
-          displayName: 'Bob Miller',
-          avatarId: 'avatar-2',
-          isMuted: true,
-          isVideoOff: false,
-          isSpeaking: false,
-        }
-      );
+      // Standalone Google Meet style room
+      setActiveCallState({
+        callId: `call_${Date.now()}`,
+        mode: 'group-meet',
+        roomTitle: 'Lunaris Sanctuary Meeting',
+        initiatorId: currentUser.personalId,
+        participants: [
+          {
+            id: currentUser.personalId,
+            personalId: currentUser.personalId,
+            displayName: currentUser.displayName,
+            avatarId: currentUser.avatarId,
+            isMuted,
+            isVideoOff,
+            isSpeaking: false,
+          },
+        ],
+        startTime: Date.now(),
+        isMuted,
+        isVideoOff,
+        isScreenSharing: false,
+        inCallChatOpen: false,
+        pinnedParticipantId: null,
+      });
+      setCurrentScreen('active-call');
     }
-
-    setActiveCallState({
-      callId: `call_${Date.now()}`,
-      mode: callLobbyPeer ? callLobbyMode : 'group-meet',
-      roomTitle: callLobbyPeer ? `Direct Call: ${callLobbyPeer.displayName}` : 'Arca Sanctuary Group Meet',
-      initiatorId: currentUser.personalId,
-      participants,
-      startTime: Date.now(),
-      isMuted,
-      isVideoOff,
-      isScreenSharing: false,
-      inCallChatOpen: false,
-      pinnedParticipantId: null,
-    });
-
-    setInCallMessages([]);
-    setCurrentScreen('active-call');
   };
 
   const handleEndCall = () => {
+    if (callLobbyPeer) {
+      sendCallSignal(callLobbyPeer.personalId, { callAction: 'hangup' });
+    } else if (activePeer) {
+      sendCallSignal(activePeer.personalId, { callAction: 'hangup' });
+    }
+    webrtcServiceRef.current?.endCall();
+    webrtcServiceRef.current = null;
+    setLocalStream(null);
+    setRemoteStream(null);
+    setIncomingCall(null);
+    setOutgoingCall(null);
     setActiveCallState(null);
     setInCallMessages([]);
     setCurrentScreen('dashboard');
+  };
+
+  const handleDeclineCall = () => {
+    if (incomingCall) {
+      sendCallSignal(incomingCall.fromId, { callAction: 'decline' });
+      setIncomingCall(null);
+    }
+  };
+
+  const handleCancelOutgoingCall = () => {
+    if (outgoingCall) {
+      sendCallSignal(outgoingCall.toId, { callAction: 'hangup' });
+      setOutgoingCall(null);
+      webrtcServiceRef.current?.endCall();
+      webrtcServiceRef.current = null;
+      setLocalStream(null);
+      setRemoteStream(null);
+      setActiveCallState(null);
+      setCurrentScreen('dashboard');
+    }
+  };
+
+  const handleAcceptIncomingCall = async () => {
+    if (!incomingCall || !currentUser) return;
+    const callerId = incomingCall.fromId;
+    const mode = incomingCall.mode;
+
+    const webrtc = new WebRTCService({
+      onLocalStream: (s) => setLocalStream(s),
+      onRemoteStream: (s) => setRemoteStream(s),
+      onSendSignal: (sig) => sendCallSignal(callerId, sig),
+    });
+    webrtcServiceRef.current = webrtc;
+
+    try {
+      const stream = await webrtc.startLocalMedia({
+        video: mode !== 'voice-1to1',
+        audio: true,
+      });
+      setLocalStream(stream);
+
+      // Signal caller that we accepted!
+      sendCallSignal(callerId, { callAction: 'accept' });
+
+      setActiveCallState({
+        callId: `call_${Date.now()}`,
+        mode,
+        roomTitle: `Lunaris Call: ${incomingCall.fromName}`,
+        initiatorId: callerId,
+        participants: [
+          {
+            id: currentUser.personalId,
+            personalId: currentUser.personalId,
+            displayName: currentUser.displayName,
+            avatarId: currentUser.avatarId,
+            isMuted: false,
+            isVideoOff: mode === 'voice-1to1',
+            isSpeaking: false,
+          },
+          {
+            id: callerId,
+            personalId: callerId,
+            displayName: incomingCall.fromName,
+            avatarId: 'avatar-2',
+            isMuted: false,
+            isVideoOff: mode === 'voice-1to1',
+            isSpeaking: false,
+          },
+        ],
+        startTime: Date.now(),
+        isMuted: false,
+        isVideoOff: mode === 'voice-1to1',
+        isScreenSharing: false,
+        inCallChatOpen: false,
+        pinnedParticipantId: null,
+      });
+
+      setIncomingCall(null);
+      setCurrentScreen('active-call');
+    } catch (err: any) {
+      alert('Camera and microphone permission required: ' + (err.message || err));
+      handleDeclineCall();
+    }
+  };
+
+  const handleToggleMute = () => {
+    if (webrtcServiceRef.current) {
+      const isMuted = webrtcServiceRef.current.toggleMute();
+      setActiveCallState((s) => (s ? { ...s, isMuted } : null));
+    } else {
+      setActiveCallState((s) => (s ? { ...s, isMuted: !s.isMuted } : null));
+    }
+  };
+
+  const handleToggleVideo = () => {
+    if (webrtcServiceRef.current) {
+      const isVideoOff = webrtcServiceRef.current.toggleVideo();
+      setActiveCallState((s) => (s ? { ...s, isVideoOff } : null));
+    } else {
+      setActiveCallState((s) => (s ? { ...s, isVideoOff: !s.isVideoOff } : null));
+    }
+  };
+
+  const handleToggleScreenShare = async () => {
+    if (webrtcServiceRef.current && activeCallState) {
+      const isSharing = await webrtcServiceRef.current.toggleScreenShare(activeCallState.isScreenSharing);
+      setActiveCallState((s) => (s ? { ...s, isScreenSharing: isSharing } : null));
+    }
   };
 
   const handleSendInCallMessage = (text: string) => {
@@ -839,15 +1149,9 @@ export default function LunarisSanctuaryApp() {
           <CallView
             callState={activeCallState}
             onEndCall={handleEndCall}
-            onToggleMute={() =>
-              setActiveCallState((s) => (s ? { ...s, isMuted: !s.isMuted } : null))
-            }
-            onToggleVideo={() =>
-              setActiveCallState((s) => (s ? { ...s, isVideoOff: !s.isVideoOff } : null))
-            }
-            onToggleScreenShare={() =>
-              setActiveCallState((s) => (s ? { ...s, isScreenSharing: !s.isScreenSharing } : null))
-            }
+            onToggleMute={handleToggleMute}
+            onToggleVideo={handleToggleVideo}
+            onToggleScreenShare={handleToggleScreenShare}
             onPinParticipant={(pId) =>
               setActiveCallState((s) => (s ? { ...s, pinnedParticipantId: pId } : null))
             }
@@ -861,6 +1165,9 @@ export default function LunarisSanctuaryApp() {
                 setIsSafetyVerified(v);
               }
             }}
+            localStream={localStream}
+            remoteStream={remoteStream}
+            currentUserId={currentUser.personalId}
           />
         )}
 
@@ -920,6 +1227,68 @@ export default function LunarisSanctuaryApp() {
         onClose={() => setSendRequestModalOpen(false)}
         onSend={handleSendConnectionRequest}
       />
+
+      {/* Incoming Call Ringing Modal */}
+      {incomingCall && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in">
+          <div className="bg-[#1E201D] text-[#F0EFEA] border-2 border-[#8EBA94] rounded-3xl w-full max-w-sm p-6 shadow-2xl text-center flex flex-col items-center">
+            <div className="w-20 h-20 rounded-full bg-[#8EBA94]/20 border-2 border-[#8EBA94] flex items-center justify-center mb-4 relative">
+              <Avatar name={incomingCall.fromName} size="xl" />
+              <span className="absolute -bottom-1 -right-1 p-2 rounded-full bg-[#8EBA94] text-[#1C1E1B] shadow-sm">
+                {incomingCall.mode === 'video-1to1' ? <Video className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
+              </span>
+            </div>
+            <h3 className="text-lg font-bold text-[#F0EFEA]">{incomingCall.fromName}</h3>
+            <p className="text-xs font-mono text-[#A9ABA8] mt-0.5">{incomingCall.fromId}</p>
+            <p className="text-sm text-[#8EBA94] mt-2 font-medium">
+              Incoming {incomingCall.mode === 'video-1to1' ? 'Video' : 'Voice'} Call...
+            </p>
+
+            <div className="flex gap-4 mt-6 w-full">
+              <button
+                onClick={handleDeclineCall}
+                className="flex-1 py-3 px-4 rounded-2xl bg-[#8E4B4B] hover:bg-[#783D3D] text-white font-semibold text-xs flex items-center justify-center gap-2 transition-all shadow-md"
+              >
+                <PhoneOff className="w-4 h-4" />
+                <span>Decline</span>
+              </button>
+              <button
+                onClick={handleAcceptIncomingCall}
+                className="flex-1 py-3 px-4 rounded-2xl bg-[#8EBA94] hover:bg-[#7CA782] text-[#1C1E1B] font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md"
+              >
+                <Phone className="w-4 h-4" />
+                <span>Accept</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Outgoing Calling Modal */}
+      {outgoingCall && currentScreen !== 'active-call' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in">
+          <div className="bg-[#1E201D] text-[#F0EFEA] border border-white/20 rounded-3xl w-full max-w-sm p-6 shadow-2xl text-center flex flex-col items-center">
+            <div className="w-20 h-20 rounded-full bg-white/10 flex items-center justify-center mb-4 relative">
+              <Avatar name={outgoingCall.toName} size="xl" />
+              <span className="absolute inset-0 rounded-full border-2 border-[#8EBA94] animate-ping opacity-75" />
+            </div>
+            <h3 className="text-lg font-bold text-[#F0EFEA]">{outgoingCall.toName}</h3>
+            <p className="text-xs font-mono text-[#A9ABA8] mt-0.5">{outgoingCall.toId}</p>
+            <p className="text-sm text-[#CBCCC7] mt-3 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-[#8EBA94] animate-pulse" />
+              Calling {outgoingCall.mode === 'video-1to1' ? 'video' : 'voice'}...
+            </p>
+
+            <button
+              onClick={handleCancelOutgoingCall}
+              className="mt-6 w-full py-3 px-4 rounded-2xl bg-[#8E4B4B] hover:bg-[#783D3D] text-white font-semibold text-xs flex items-center justify-center gap-2 transition-all shadow-md"
+            >
+              <PhoneOff className="w-4 h-4" />
+              <span>Cancel Call</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

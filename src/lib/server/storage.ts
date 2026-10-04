@@ -214,22 +214,94 @@ class ServerStorage {
 
   // --- Ephemeral Relay Queue ---
   public enqueueRelayPacket(packet: EncryptedPacket): boolean {
-    // Enforcement: packet must only be queued between accepted connections
+    // Enforcement: regular messages require accepted connection; call signals allowed unless blocked
     const conn = this.getConnection(packet.senderId, packet.recipientId);
-    if (!conn || conn.status !== 'accepted') {
-      return false; // Connection not accepted
+    if (packet.type !== 'signal_call') {
+      if (!conn || conn.status !== 'accepted') {
+        return false; // Connection not accepted
+      }
+    } else {
+      if (conn && conn.status === 'blocked') {
+        return false; // Blocked
+      }
     }
 
     this.ephemeralRelayQueue.push(packet);
+
+    // If Upstash Redis or Vercel KV is configured, fire-and-forget sync to cloud store
+    this.syncPacketToUpstash(packet);
+
     return true;
+  }
+
+  private async syncPacketToUpstash(packet: EncryptedPacket): Promise<void> {
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (!url || !token) return;
+
+    try {
+      const key = `lunaris:relay:${packet.recipientId}`;
+      const serialized = JSON.stringify(packet);
+      await fetch(`${url}/rpush/${key}/${encodeURIComponent(serialized)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await fetch(`${url}/expire/${key}/600`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (err) {
+      console.warn('Upstash Redis sync error:', err);
+    }
   }
 
   public dequeueRelayPacketsForRecipient(recipientPersonalId: string): EncryptedPacket[] {
     this.purgeExpiredRelayPackets();
     const packets = this.ephemeralRelayQueue.filter((p) => p.recipientId === recipientPersonalId);
-    // Remove retrieved packets immediately upon delivery poll
     this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter((p) => p.recipientId !== recipientPersonalId);
     return packets;
+  }
+
+  public async dequeueRelayPacketsAsync(recipientPersonalId: string): Promise<EncryptedPacket[]> {
+    const localPackets = this.dequeueRelayPacketsForRecipient(recipientPersonalId);
+
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (url && token) {
+      try {
+        const key = `lunaris:relay:${recipientPersonalId}`;
+        const res = await fetch(`${url}/lrange/${key}/0/-1`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.result) && data.result.length > 0) {
+            await fetch(`${url}/del/${key}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const remotePackets = data.result
+              .map((r: string) => {
+                try {
+                  return JSON.parse(r);
+                } catch {
+                  return null;
+                }
+              })
+              .filter(Boolean);
+
+            const combined = [...localPackets, ...remotePackets];
+            const seen = new Set<string>();
+            return combined.filter((p) => {
+              if (seen.has(p.packetId)) return false;
+              seen.add(p.packetId);
+              return true;
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('Upstash Redis dequeue error:', err);
+      }
+    }
+
+    return localPackets;
   }
 
   public acknowledgePacket(packetId: string): void {
