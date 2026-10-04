@@ -81,27 +81,6 @@ export default function LunarisSanctuaryApp() {
   // Double Ratchet Sessions cache in memory
   const ratchetSessionsRef = useRef<Map<string, DoubleRatchetSession>>(new Map());
 
-  // Initialize from client storage
-  useEffect(() => {
-    const loadedSettings = vault.getSettings();
-    setSettings(loadedSettings);
-    applyTheme(loadedSettings.theme);
-
-    // Check online/offline listeners
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    // Initial default user: Alice for zero-friction exploration
-    handleSwitchPeer('ID:ALIC8821');
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
   const applyTheme = (theme: 'light' | 'dark') => {
     if (typeof document !== 'undefined') {
       if (theme === 'dark') {
@@ -135,6 +114,35 @@ export default function LunarisSanctuaryApp() {
       console.warn('Could not fetch connections:', err);
     }
   }, []);
+
+  // Initialize from client storage
+  useEffect(() => {
+    const loadedSettings = vault.getSettings();
+    setSettings(loadedSettings);
+    applyTheme(loadedSettings.theme);
+
+    // Check online/offline listeners
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Restore real authenticated session from client vault, if present
+    const savedUser = vault.getCurrentUser();
+    if (savedUser) {
+      setCurrentUser(savedUser);
+      setCurrentScreen('dashboard');
+      fetchConnections(savedUser.personalId);
+    } else {
+      setCurrentUser(null);
+      setCurrentScreen('welcome');
+    }
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [fetchConnections]);
 
   // Send call signaling packet via relay
   const sendCallSignal = useCallback(
@@ -367,31 +375,17 @@ export default function LunarisSanctuaryApp() {
     return () => clearInterval(interval);
   }, [currentUser, pollRelayPackets]);
 
-  // Switch Peer Simulator
-  const handleSwitchPeer = async (peerId: string) => {
-    try {
-      const res = await fetch(`/api/users/lookup?id=${peerId}`);
-      if (res.ok) {
-        const data = await res.json();
-        const user = data.user;
-        setCurrentUser({
-          id: `usr_${user.personalId}`,
-          personalId: user.personalId,
-          displayName: user.displayName,
-          bio: user.bio,
-          avatarId: user.avatarId,
-          identityKeyPub: user.identityKeyPub,
-          signedPreKeyPub: user.signedPreKeyPub,
-          createdAt: user.createdAt,
-          devices: [{ id: 'dev_local', name: 'Verified Browser Session', lastActive: Date.now() }],
-        });
-        setCurrentScreen('dashboard');
-        fetchConnections(user.personalId);
-        setActivePeer(null);
-      }
-    } catch (err) {
-      console.warn('Failed to switch peer:', err);
-    }
+  // User Logout & Lock Session
+  const handleLogout = () => {
+    vault.saveCurrentUser(null);
+    setCurrentUser(null);
+    setCurrentScreen('welcome');
+    setActivePeer(null);
+    setAcceptedConnections([]);
+    setIncomingRequests([]);
+    setOutgoingRequests([]);
+    setBlockedUsers([]);
+    setMessages([]);
   };
 
   // Start chat with a peer
@@ -1048,7 +1042,7 @@ export default function LunarisSanctuaryApp() {
           currentScreen={currentScreen}
           onNavigate={setCurrentScreen}
           currentUser={currentUser}
-          onSwitchPeer={handleSwitchPeer}
+          onLogout={handleLogout}
           onOpenAuth={(m) => {
             setAuthInitialMode(m);
             setAuthModalOpen(true);
@@ -1071,7 +1065,6 @@ export default function LunarisSanctuaryApp() {
               setAuthInitialMode(m);
               setAuthModalOpen(true);
             }}
-            onEnterAsDemo={handleSwitchPeer}
           />
         )}
 
@@ -1215,6 +1208,7 @@ export default function LunarisSanctuaryApp() {
         initialMode={authInitialMode}
         onClose={() => setAuthModalOpen(false)}
         onSuccess={(user) => {
+          vault.saveCurrentUser(user);
           setCurrentUser(user);
           setCurrentScreen('dashboard');
           fetchConnections(user.personalId);

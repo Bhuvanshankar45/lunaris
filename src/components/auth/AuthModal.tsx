@@ -29,13 +29,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleQuickDemo = (demoId: string) => {
-    // Fill credentials for demo peer
-    setEmail(demoId === 'ID:ALIC8821' ? 'alice@lunaris.local' : 'bob@lunaris.local');
-    setPassword('SanctuaryPass2026!');
-    setDisplayName(demoId === 'ID:ALIC8821' ? 'Alice Vance' : 'Bob Miller');
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -160,27 +153,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </button>
         </div>
 
-        {/* Demo Fast-Fill Chips */}
-        <div className="mb-4 p-2.5 rounded-xl bg-[#D0CABA]/60 border border-[#B8AB90]/50 flex items-center justify-between">
-          <span className="text-[11px] text-[#4A4E47] font-medium">Quick Demo Credentials:</span>
-          <div className="flex gap-1.5">
-            <button
-              type="button"
-              onClick={() => handleQuickDemo('ID:ALIC8821')}
-              className="text-[10px] font-mono px-2 py-1 rounded-md bg-[#E0E0D5] hover:bg-[#F2F2EB] border border-[#B8AB90] text-[#1C1E1B] transition-colors"
-            >
-              Alice (ID:ALIC8821)
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickDemo('ID:BOBX4492')}
-              className="text-[10px] font-mono px-2 py-1 rounded-md bg-[#E0E0D5] hover:bg-[#F2F2EB] border border-[#B8AB90] text-[#1C1E1B] transition-colors"
-            >
-              Bob (ID:BOBX4492)
-            </button>
-          </div>
-        </div>
-
         <form onSubmit={handleSubmit} className="space-y-3.5">
           {mode === 'register' && (
             <div>
@@ -193,7 +165,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   id="reg-name"
                   type="text"
                   required
-                  placeholder="e.g. Alice Vance"
+                  placeholder="e.g. David Thorne"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   className="w-full pl-9 pr-3.5 py-2 rounded-xl border border-[#CBCCC7] bg-[#F2F2EB] text-xs text-[#1C1E1B] focus:border-[#525C51] focus:ring-1 focus:ring-[#525C51] outline-hidden"

@@ -16,7 +16,7 @@ import {
   Radio,
   ArrowRightLeft,
   UserPlus,
-  LogIn,
+  LogOut,
 } from 'lucide-react';
 import { AppScreen, UserProfile } from '@/types';
 import { Avatar } from '../ui/Avatar';
@@ -25,7 +25,7 @@ interface NavbarProps {
   currentScreen: AppScreen;
   onNavigate: (screen: AppScreen) => void;
   currentUser: UserProfile;
-  onSwitchPeer: (peerId: string) => void;
+  onLogout?: () => void;
   onOpenAuth?: (mode: 'login' | 'register') => void;
   isOnline: boolean;
   theme: 'light' | 'dark';
@@ -38,7 +38,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentScreen,
   onNavigate,
   currentUser,
-  onSwitchPeer,
+  onLogout,
   onOpenAuth,
   isOnline,
   theme,
@@ -47,7 +47,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   pendingRequestsCount = 0,
 }) => {
   const [copied, setCopied] = useState(false);
-  const [showPeerSwitcher, setShowPeerSwitcher] = useState(false);
 
   const handleCopyId = () => {
     navigator.clipboard.writeText(currentUser.personalId);
@@ -164,82 +163,20 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
         </nav>
 
-        {/* Right Tools: Peer Switcher, Theme & Profile */}
+        {/* Right Tools: Sign Out, Theme & Profile */}
         <div className="flex items-center gap-2.5">
-          {/* Peer Simulator Switcher */}
-          <div className="relative">
+          {/* Sign Out / Lock Vault */}
+          {onLogout && (
             <button
-              onClick={() => setShowPeerSwitcher(!showPeerSwitcher)}
-              className="flex items-center gap-1.5 py-1.5 px-2.5 rounded-xl text-xs font-medium bg-[#CBCCC7]/60 hover:bg-[#CBCCC7] border border-[#B8AB90] text-[#1C1E1B] transition-colors"
-              title="Test real-time E2EE by switching between peers"
-              aria-label="Switch active demo peer"
+              onClick={onLogout}
+              className="flex items-center gap-1.5 py-1.5 px-2.5 rounded-xl text-xs font-medium bg-[#CBCCC7]/50 hover:bg-[#8E4B4B] hover:text-[#F8F8F4] border border-[#B8AB90] text-[#1C1E1B] transition-all shadow-2xs"
+              title="Lock Vault & Sign Out"
+              aria-label="Sign Out"
             >
-              <ArrowRightLeft className="w-3.5 h-3.5 text-[#525C51]" />
-              <span className="hidden lg:inline">Switch Peer:</span>
-              <span className="font-semibold">{currentUser.displayName.split(' ')[0]}</span>
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
-
-            {showPeerSwitcher && (
-              <div className="absolute right-0 mt-2 w-64 bg-[#E0E0D5] border border-[#B8AB90] rounded-2xl p-2 shadow-xl z-50 animate-in fade-in zoom-in-95">
-                <div className="px-3 py-1.5 border-b border-[#CBCCC7] mb-1">
-                  <p className="text-[11px] font-semibold text-[#1C1E1B]">Instant Peer Simulator</p>
-                  <p className="text-[10px] text-[#4A4E47]">Simulate real-time 2-way ratcheted chats</p>
-                </div>
-                <div className="space-y-1">
-                  {[
-                    { id: 'ID:ALIC8821', name: 'Alice Vance', avatar: 'avatar-1' },
-                    { id: 'ID:BOBX4492', name: 'Bob Miller', avatar: 'avatar-2' },
-                    { id: 'ID:CLAR3310', name: 'Dr. Clara Sterling', avatar: 'avatar-3' },
-                  ].map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => {
-                        onSwitchPeer(p.id);
-                        setShowPeerSwitcher(false);
-                      }}
-                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-left text-xs transition-colors ${
-                        currentUser.personalId === p.id
-                          ? 'bg-[#525C51] text-[#F8F8F4]'
-                          : 'hover:bg-[#CBCCC7] text-[#1C1E1B]'
-                      }`}
-                    >
-                      <Avatar name={p.name} size="xs" />
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium truncate">{p.name}</p>
-                        <p className="text-[10px] font-mono opacity-80">{p.id}</p>
-                      </div>
-                      {currentUser.personalId === p.id && <Check className="w-3.5 h-3.5" />}
-                    </button>
-                  ))}
-                </div>
-
-                {onOpenAuth && (
-                  <div className="border-t border-[#CBCCC7] mt-2 pt-1.5 space-y-1">
-                    <button
-                      onClick={() => {
-                        setShowPeerSwitcher(false);
-                        onOpenAuth('register');
-                      }}
-                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-left text-xs hover:bg-[#CBCCC7] text-[#1C1E1B] font-medium transition-colors"
-                    >
-                      <UserPlus className="w-3.5 h-3.5 text-[#525C51]" />
-                      <span>Create New Sovereign Account</span>
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowPeerSwitcher(false);
-                        onOpenAuth('login');
-                      }}
-                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-left text-xs hover:bg-[#CBCCC7] text-[#1C1E1B] font-medium transition-colors"
-                    >
-                      <LogIn className="w-3.5 h-3.5 text-[#525C51]" />
-                      <span>Sign In to Existing Account</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          )}
 
           {/* Theme Toggle */}
           <button

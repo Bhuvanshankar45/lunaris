@@ -52,7 +52,9 @@ class ServerStorage {
   private abuseReports: AbuseReportRecord[] = [];
 
   constructor() {
-    this.seedDemoUsers();
+    if (process.env.NODE_ENV === 'test') {
+      this.seedDemoUsers();
+    }
     // Periodic ephemeral packet expiration sweep (every 30 seconds)
     if (typeof setInterval !== 'undefined') {
       setInterval(() => this.purgeExpiredRelayPackets(), 30000);

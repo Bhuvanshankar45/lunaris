@@ -16,12 +16,10 @@ import {
 
 interface WelcomeScreenProps {
   onOpenAuth: (mode: 'login' | 'register') => void;
-  onEnterAsDemo: (peerId: string) => void;
 }
 
 export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   onOpenAuth,
-  onEnterAsDemo,
 }) => {
   return (
     <div className="min-h-[calc(100vh-4rem)] flex flex-col justify-between max-w-6xl mx-auto px-4 sm:px-6 py-10">
@@ -42,7 +40,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
         </p>
 
         {/* Action Buttons */}
-        <div className="flex flex-wrap items-center justify-center gap-3.5 mb-10">
+        <div className="flex flex-wrap items-center justify-center gap-3.5 mb-2">
           <button
             onClick={() => onOpenAuth('register')}
             className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-[#525C51] text-[#F8F8F4] text-sm font-semibold hover:bg-[#434B42] transition-all shadow-sm hover:scale-[1.02]"
@@ -57,28 +55,6 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
           >
             <span>Sign In to Sanctuary</span>
           </button>
-        </div>
-
-        {/* Instant Peer Simulator Chips */}
-        <div className="p-4 rounded-2xl bg-[#CBCCC7]/40 border border-[#B8AB90] inline-block max-w-md w-full">
-          <p className="text-xs font-semibold text-[#1C1E1B] mb-1">Instant Interactive Evaluation</p>
-          <p className="text-[11px] text-[#4A4E47] mb-3">Jump right in with pre-generated keys:</p>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => onEnterAsDemo('ID:ALIC8821')}
-              className="py-2 px-3 rounded-xl bg-[#E0E0D5] hover:bg-[#F2F2EB] border border-[#B8AB90] text-xs font-medium text-[#1C1E1B] transition-colors flex items-center justify-center gap-1.5"
-            >
-              <span>Alice</span>
-              <span className="font-mono text-[10px] text-[#6E746A]">ID:ALIC8821</span>
-            </button>
-            <button
-              onClick={() => onEnterAsDemo('ID:BOBX4492')}
-              className="py-2 px-3 rounded-xl bg-[#E0E0D5] hover:bg-[#F2F2EB] border border-[#B8AB90] text-xs font-medium text-[#1C1E1B] transition-colors flex items-center justify-center gap-1.5"
-            >
-              <span>Bob</span>
-              <span className="font-mono text-[10px] text-[#6E746A]">ID:BOBX4492</span>
-            </button>
-          </div>
         </div>
       </div>
 

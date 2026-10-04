@@ -6,6 +6,7 @@
 
 import { StoredLocalMessage } from '../crypto/types';
 import { RatchetSessionState } from '../crypto/double-ratchet';
+import { UserProfile } from '@/types';
 
 const STORAGE_KEYS = {
   CURRENT_USER: 'lunaris_current_user',
@@ -65,6 +66,29 @@ class LocalVault {
       storage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
     }
     return updated;
+  }
+
+  // --- Current Active User Session ---
+  public getCurrentUser(): UserProfile | null {
+    const storage = this.getStorage();
+    if (!storage) return null;
+    const raw = storage.getItem(STORAGE_KEYS.CURRENT_USER);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  public saveCurrentUser(user: UserProfile | null): void {
+    const storage = this.getStorage();
+    if (!storage) return;
+    if (user === null) {
+      storage.removeItem(STORAGE_KEYS.CURRENT_USER);
+    } else {
+      storage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
+    }
   }
 
   // --- Messages ---
