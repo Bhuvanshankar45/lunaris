@@ -19,9 +19,9 @@ import { AppScreen, CallMode, PeerContact, UserProfile, ActiveCallState } from '
 import { StoredLocalMessage, EncryptedPacket } from '@/lib/crypto/types';
 import { vault, DEFAULT_SETTINGS, UserSettings } from '@/lib/storage/vault';
 import { DoubleRatchetSession } from '@/lib/crypto/double-ratchet';
-import { deriveSafetyNumber, generateECDHKeyPair, exportPrivateKey } from '@/lib/crypto/primitives';
+import { deriveSafetyNumber, generateECDHKeyPair, exportPrivateKey, exportPublicKey } from '@/lib/crypto/primitives';
 import { encryptFileForRelay, decryptFileFromRelay } from '@/lib/crypto/file-encryption';
-import { DEMO_PREKEYS_PRIV } from '@/lib/crypto/demo-keys';
+import { DEMO_PREKEYS_PRIV, DEMO_PREKEYS_PUB } from '@/lib/crypto/demo-keys';
 import { WifiOff, Radio, Phone, PhoneOff, Video, VideoOff } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { WebRTCService } from '@/lib/webrtc/webrtc-service';
@@ -156,24 +156,54 @@ export default function LunarisSanctuaryApp() {
     // Restore real authenticated session from client vault, if present
     const savedUser = vault.getCurrentUser();
     if (savedUser) {
-      // Ensure local device private keys exist for this user in vault so packets can be decrypted
-      const keyBundle = vault.getUserKeyBundle(savedUser.personalId);
-      if (!keyBundle || !keyBundle.signedPreKeyPriv) {
-        (async () => {
+      // Ensure local device private keys exist for this user in vault and public keys are updated
+      (async () => {
+        let keyBundle = vault.getUserKeyBundle(savedUser.personalId);
+        let idPub = savedUser.identityKeyPub;
+        let spPub = savedUser.signedPreKeyPub;
+
+        if (!keyBundle || !keyBundle.signedPreKeyPriv || !idPub || !spPub) {
           try {
             const idKp = await generateECDHKeyPair();
             const spKp = await generateECDHKeyPair();
             const idPriv = await exportPrivateKey(idKp.privateKey);
             const spPriv = await exportPrivateKey(spKp.privateKey);
+            idPub = await exportPublicKey(idKp.publicKey);
+            spPub = await exportPublicKey(spKp.publicKey);
+
             vault.saveUserKeyBundle(savedUser.personalId, {
               identityKeyPriv: idPriv,
               signedPreKeyPriv: spPriv,
             });
+
+            const updatedUser = {
+              ...savedUser,
+              identityKeyPub: idPub,
+              signedPreKeyPub: spPub,
+            };
+            vault.saveCurrentUser(updatedUser);
+            setCurrentUser(updatedUser);
           } catch (e) {
             console.warn('Could not auto-generate missing key bundle on startup:', e);
           }
-        })();
-      }
+        }
+
+        // Announce and sync public keys to server storage
+        if (idPub && spPub) {
+          fetch('/api/users/sync-keys', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              personalId: savedUser.personalId,
+              identityKeyPub: idPub,
+              signedPreKeyPub: spPub,
+              displayName: savedUser.displayName,
+              avatarId: savedUser.avatarId,
+              bio: savedUser.bio,
+            }),
+          }).catch(() => {});
+        }
+      })();
 
       setCurrentUser(savedUser);
       // Pre-populate with locally stored friends instantly
@@ -298,7 +328,11 @@ export default function LunarisSanctuaryApp() {
   const pollRelayPackets = useCallback(async () => {
     if (!currentUser) return;
     try {
-      const res = await fetch(`/api/relay/poll?recipientId=${currentUser.personalId}`);
+      const res = await fetch(
+        `/api/relay/poll?recipientId=${currentUser.personalId}&pubKey=${encodeURIComponent(
+          currentUser.identityKeyPub || ''
+        )}&preKey=${encodeURIComponent(currentUser.signedPreKeyPub || '')}`
+      );
       if (res.ok) {
         const data = await res.json();
         if (data.packets && data.packets.length > 0) {
@@ -369,6 +403,64 @@ export default function LunarisSanctuaryApp() {
                         }
                         return [acceptedFriend, ...prev];
                       });
+                    }
+                    continue;
+                  }
+                  if (payload.callAction === 'request_prekey') {
+                    // Peer is asking for our public pre-keys, reply immediately
+                    if (currentUser.identityKeyPub && currentUser.signedPreKeyPub) {
+                      const respPacket: EncryptedPacket = {
+                        packetId: `prekey_resp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                        senderId: currentUser.personalId,
+                        recipientId: packet.senderId,
+                        type: 'signal_call',
+                        ephemeralPublicKey: currentUser.identityKeyPub,
+                        sequenceNumber: 0,
+                        previousChainLength: 0,
+                        iv: 'prekey_resp_iv',
+                        ciphertext: btoa(
+                          unescape(
+                            encodeURIComponent(
+                              JSON.stringify({
+                                callAction: 'response_prekey',
+                                identityKeyPub: currentUser.identityKeyPub,
+                                signedPreKeyPub: currentUser.signedPreKeyPub,
+                              })
+                            )
+                          )
+                        ),
+                        createdAt: Date.now(),
+                        expiresAt: Date.now() + 60000,
+                      };
+                      fetch('/api/relay/send', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(respPacket),
+                      }).catch(() => {});
+                    }
+                    continue;
+                  }
+                  if (payload.callAction === 'response_prekey') {
+                    if (payload.signedPreKeyPub) {
+                      vault.updateAcceptedFriend(packet.senderId, (f) => ({
+                        ...f,
+                        peer: {
+                          ...f.peer,
+                          signedPreKeyPub: payload.signedPreKeyPub,
+                          identityKeyPub: payload.identityKeyPub || f.peer.identityKeyPub,
+                        },
+                      }));
+                      if (activePeer && activePeer.personalId === packet.senderId) {
+                        setActivePeer((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                signedPreKeyPub: payload.signedPreKeyPub,
+                                identityKeyPub: payload.identityKeyPub || prev.identityKeyPub,
+                              }
+                            : null
+                        );
+                      }
                     }
                     continue;
                   }
@@ -570,6 +662,12 @@ export default function LunarisSanctuaryApp() {
     let peerSignedPreKeyPub = activePeer.signedPreKeyPub;
     let peerIdentityKeyPub = activePeer.identityKeyPub;
 
+    // Check pre-seeded demo keys if missing
+    if (!peerSignedPreKeyPub && DEMO_PREKEYS_PUB[activePeer.personalId]) {
+      peerSignedPreKeyPub = DEMO_PREKEYS_PUB[activePeer.personalId];
+      peerIdentityKeyPub = peerIdentityKeyPub || DEMO_PREKEYS_PUB[activePeer.personalId];
+    }
+
     if (!peerSignedPreKeyPub || !peerIdentityKeyPub) {
       try {
         const lookupRes = await fetch(`/api/users/lookup?id=${encodeURIComponent(activePeer.personalId)}`);
@@ -595,6 +693,15 @@ export default function LunarisSanctuaryApp() {
         }
       } catch (lookupErr) {
         console.warn('Failed to lookup peer keys:', lookupErr);
+      }
+    }
+
+    // Check connection list fallback
+    if (!peerSignedPreKeyPub) {
+      const connFriend = acceptedConnections.find((c) => c.peer.personalId === activePeer.personalId);
+      if (connFriend?.peer.signedPreKeyPub) {
+        peerSignedPreKeyPub = connFriend.peer.signedPreKeyPub;
+        peerIdentityKeyPub = connFriend.peer.identityKeyPub || peerIdentityKeyPub;
       }
     }
 
@@ -741,6 +848,12 @@ export default function LunarisSanctuaryApp() {
       let peerSignedPreKeyPub = activePeer.signedPreKeyPub;
       let peerIdentityKeyPub = activePeer.identityKeyPub;
 
+      // Check pre-seeded demo keys if missing
+      if (!peerSignedPreKeyPub && DEMO_PREKEYS_PUB[activePeer.personalId]) {
+        peerSignedPreKeyPub = DEMO_PREKEYS_PUB[activePeer.personalId];
+        peerIdentityKeyPub = peerIdentityKeyPub || DEMO_PREKEYS_PUB[activePeer.personalId];
+      }
+
       if (!peerSignedPreKeyPub || !peerIdentityKeyPub) {
         try {
           const lookupRes = await fetch(`/api/users/lookup?id=${encodeURIComponent(activePeer.personalId)}`);
@@ -753,6 +866,15 @@ export default function LunarisSanctuaryApp() {
           }
         } catch {
           // ignore
+        }
+      }
+
+      // Check connection list fallback
+      if (!peerSignedPreKeyPub) {
+        const connFriend = acceptedConnections.find((c) => c.peer.personalId === activePeer.personalId);
+        if (connFriend?.peer.signedPreKeyPub) {
+          peerSignedPreKeyPub = connFriend.peer.signedPreKeyPub;
+          peerIdentityKeyPub = connFriend.peer.identityKeyPub || peerIdentityKeyPub;
         }
       }
 

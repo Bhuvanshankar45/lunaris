@@ -133,6 +133,59 @@ class ServerStorage {
     this.syncUserToUpstash(user).catch(() => {});
   }
 
+  public updateUserKeys(
+    personalId: string,
+    identityKeyPub?: string,
+    signedPreKeyPub?: string,
+    displayName?: string,
+    avatarId?: string,
+    bio?: string
+  ): void {
+    let user = this.users.get(personalId);
+    if (user) {
+      if (identityKeyPub) user.identityKeyPub = identityKeyPub;
+      if (signedPreKeyPub) user.signedPreKeyPub = signedPreKeyPub;
+      if (displayName) user.displayName = displayName;
+      if (avatarId) user.avatarId = avatarId;
+      if (bio !== undefined) user.bio = bio;
+      this.syncUserToUpstash(user).catch(() => {});
+    } else if (identityKeyPub && signedPreKeyPub) {
+      // Auto-register/restore user profile in server storage
+      const restoredUser: ServerUser = {
+        id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        personalId,
+        emailHash: `hash_${personalId.toLowerCase()}`,
+        passwordHash: 'vault_authenticated',
+        displayName: displayName || personalId,
+        bio: bio || '',
+        avatarId: avatarId || 'avatar-1',
+        identityKeyPub,
+        signedPreKeyPub,
+        signedPreKeySig: 'sig_restored',
+        createdAt: Date.now(),
+        devices: [{ id: `dev_${Date.now()}`, name: 'Active Session', lastActive: Date.now() }],
+      };
+      this.registerUser(restoredUser);
+    }
+
+    // Also update any active connection records involving this user
+    for (const [, conn] of this.connections.entries()) {
+      let changed = false;
+      if (conn.userIdA === personalId || conn.userIdB === personalId) {
+        if (conn.initiatorId === personalId) {
+          if (identityKeyPub) { conn.initiatorIdentityKeyPub = identityKeyPub; changed = true; }
+          if (signedPreKeyPub) { conn.initiatorSignedPreKeyPub = signedPreKeyPub; changed = true; }
+        } else {
+          if (identityKeyPub) { conn.targetIdentityKeyPub = identityKeyPub; changed = true; }
+          if (signedPreKeyPub) { conn.targetSignedPreKeyPub = signedPreKeyPub; changed = true; }
+        }
+        if (changed) {
+          this.syncConnectionToUpstash(conn);
+        }
+      }
+    }
+  }
+
   public async syncUserToUpstash(user: ServerUser): Promise<void> {
     const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
     const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;

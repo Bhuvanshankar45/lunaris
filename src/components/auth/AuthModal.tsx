@@ -75,7 +75,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           signedPreKeyPriv,
         });
 
-        onSuccess(data.user, data.token);
+        const registeredUser = {
+          ...data.user,
+          identityKeyPub: identityKeyPub || data.user.identityKeyPub,
+          signedPreKeyPub: signedPreKeyPub || data.user.signedPreKeyPub,
+        };
+
+        onSuccess(registeredUser, data.token);
         onClose();
       } else {
         const res = await fetch('/api/auth/login', {
@@ -100,9 +106,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           throw new Error(data.error || 'Authentication failed');
         }
 
-        const userObj = data.user;
+        const userObj = { ...data.user };
         const existingBundle = vault.getUserKeyBundle(userObj.personalId);
-        if (!existingBundle) {
+        if (!existingBundle || !existingBundle.signedPreKeyPriv || !userObj.signedPreKeyPub) {
           try {
             const identityPair = await generateECDHKeyPair();
             const signedPreKeyPair = await generateECDHKeyPair();
@@ -116,6 +122,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             });
             userObj.identityKeyPub = identityKeyPub;
             userObj.signedPreKeyPub = signedPreKeyPub;
+
+            fetch('/api/users/sync-keys', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                personalId: userObj.personalId,
+                identityKeyPub,
+                signedPreKeyPub,
+                displayName: userObj.displayName,
+                avatarId: userObj.avatarId,
+                bio: userObj.bio,
+              }),
+            }).catch(() => {});
           } catch (keyErr) {
             console.warn('Device key generation error on login:', keyErr);
           }

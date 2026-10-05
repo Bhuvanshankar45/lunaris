@@ -61,6 +61,7 @@ export async function POST(request: Request) {
       bio: newUser.bio,
       avatarId: newUser.avatarId,
       identityKeyPub: newUser.identityKeyPub,
+      signedPreKeyPub: newUser.signedPreKeyPub,
       createdAt: newUser.createdAt,
       devices: newUser.devices,
     };
