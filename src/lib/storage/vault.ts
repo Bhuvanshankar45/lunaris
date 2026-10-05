@@ -6,7 +6,7 @@
 
 import { StoredLocalMessage } from '../crypto/types';
 import { RatchetSessionState } from '../crypto/double-ratchet';
-import { UserProfile } from '@/types';
+import { UserProfile, PeerContact } from '@/types';
 
 const STORAGE_KEYS = {
   CURRENT_USER: 'lunaris_current_user',
@@ -17,6 +17,7 @@ const STORAGE_KEYS = {
   SETTINGS: 'lunaris_user_settings',
   BLOCKED_USERS: 'lunaris_blocked_users',
   SAFETY_NUMBERS: 'lunaris_safety_numbers',
+  ACCEPTED_FRIENDS: 'lunaris_accepted_friends',
 };
 
 export interface UserSettings {
@@ -258,6 +259,43 @@ class LocalVault {
   public getSignedPreKeyPriv(personalId: string): string | null {
     const bundle = this.getUserKeyBundle(personalId);
     return bundle ? bundle.signedPreKeyPriv : null;
+  }
+
+  // --- Permanent Friends / Accepted Connections ---
+  public getAcceptedFriends(): { connectionId: string; peer: PeerContact; updatedAt?: number }[] {
+    const storage = this.getStorage();
+    if (!storage) return [];
+    const raw = storage.getItem(STORAGE_KEYS.ACCEPTED_FRIENDS);
+    if (!raw) return [];
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  public saveAcceptedFriends(friends: { connectionId: string; peer: PeerContact; updatedAt?: number }[]): void {
+    const storage = this.getStorage();
+    if (!storage) return;
+    storage.setItem(STORAGE_KEYS.ACCEPTED_FRIENDS, JSON.stringify(friends));
+  }
+
+  public addAcceptedFriend(friend: { connectionId: string; peer: PeerContact; updatedAt?: number }): void {
+    const current = this.getAcceptedFriends();
+    const filtered = current.filter((f) => f.peer.personalId !== friend.peer.personalId);
+    filtered.unshift(friend);
+    this.saveAcceptedFriends(filtered);
+  }
+
+  public removeAcceptedFriend(peerId: string): void {
+    const current = this.getAcceptedFriends();
+    const filtered = current.filter((f) => f.peer.personalId !== peerId);
+    this.saveAcceptedFriends(filtered);
+  }
+
+  public isFriend(peerId: string): boolean {
+    const friends = this.getAcceptedFriends();
+    return friends.some((f) => f.peer.personalId === peerId);
   }
 
   /**

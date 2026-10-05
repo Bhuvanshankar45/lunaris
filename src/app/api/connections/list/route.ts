@@ -9,7 +9,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'User ID is required.' }, { status: 400 });
   }
 
-  const rawConnections = serverStorage.getConnectionsForUser(userId);
+  const rawConnections = await serverStorage.getConnectionsForUserAsync(userId);
 
   // Hydrate connection details with public user metadata
   const accepted = [];
@@ -19,17 +19,16 @@ export async function GET(request: Request) {
 
   for (const conn of rawConnections) {
     const peerId = conn.userIdA === userId ? conn.userIdB : conn.userIdA;
-    const peerUser = serverStorage.getUserByPersonalId(peerId);
-    if (!peerUser) continue;
+    const peerUser = await serverStorage.getUserByPersonalIdAsync(peerId);
 
     const publicPeer = {
-      personalId: peerUser.personalId,
-      displayName: peerUser.displayName,
-      bio: peerUser.bio,
-      avatarId: peerUser.avatarId,
-      identityKeyPub: peerUser.identityKeyPub,
-      signedPreKeyPub: peerUser.signedPreKeyPub,
-      createdAt: peerUser.createdAt,
+      personalId: peerId,
+      displayName: peerUser ? peerUser.displayName : peerId,
+      bio: peerUser ? peerUser.bio : '',
+      avatarId: peerUser ? peerUser.avatarId : 'avatar-1',
+      identityKeyPub: peerUser ? peerUser.identityKeyPub : '',
+      signedPreKeyPub: peerUser ? peerUser.signedPreKeyPub : '',
+      createdAt: peerUser ? peerUser.createdAt : conn.createdAt,
     };
 
     if (conn.status === 'accepted') {

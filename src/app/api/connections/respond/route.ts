@@ -14,7 +14,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid action. Allowed: accept, reject, block.' }, { status: 400 });
     }
 
-    const conn = serverStorage.getConnection(currentUserId, targetUserId);
+    const conn = await serverStorage.getConnectionAsync(currentUserId, targetUserId);
     if (!conn) {
       return NextResponse.json({ error: 'Connection request not found.' }, { status: 404 });
     }

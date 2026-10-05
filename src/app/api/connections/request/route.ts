@@ -22,22 +22,31 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid ID format.' }, { status: 400 });
     }
 
-    const targetUser = serverStorage.getUserByPersonalId(normTo);
+    const targetUser = await serverStorage.getUserByPersonalIdAsync(normTo);
     if (!targetUser) {
       return NextResponse.json({ error: 'Recipient user does not exist.' }, { status: 404 });
     }
 
     // Check existing connection
-    const existing = serverStorage.getConnection(normFrom, normTo);
+    const existing = await serverStorage.getConnectionAsync(normFrom, normTo);
     if (existing) {
       if (existing.status === 'blocked') {
         return NextResponse.json({ error: 'Unable to send request.' }, { status: 403 });
       }
       if (existing.status === 'accepted') {
-        return NextResponse.json({ message: 'Already connected.', connection: existing });
+        return NextResponse.json({
+          success: true,
+          message: 'You are already connected as friends!',
+          connection: existing,
+          alreadyConnected: true,
+        });
       }
       if (existing.status === 'pending') {
-        return NextResponse.json({ message: 'Request is already pending.', connection: existing });
+        return NextResponse.json({
+          success: true,
+          message: 'Connection request is already pending review.',
+          connection: existing,
+        });
       }
     }
 

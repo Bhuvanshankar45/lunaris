@@ -16,7 +16,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Invalid ID format. Must match ID:CSDX2007' }, { status: 400 });
   }
 
-  const user = serverStorage.getUserByPersonalId(personalId);
+  const user = await serverStorage.getUserByPersonalIdAsync(personalId);
   if (!user) {
     return NextResponse.json({ error: 'No user found with this exact ID.' }, { status: 404 });
   }

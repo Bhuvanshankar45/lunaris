@@ -105,13 +105,29 @@ export default function LunarisSanctuaryApp() {
       const res = await fetch(`/api/connections/list?userId=${userId}`);
       if (res.ok) {
         const data = await res.json();
-        setAcceptedConnections(data.accepted || []);
+        const serverAccepted = data.accepted || [];
+
+        // Merge with local persistent vault friends so contacts are NEVER lost across restarts
+        const localFriends = vault.getAcceptedFriends();
+        const mergedMap = new Map<string, { connectionId: string; peer: PeerContact; updatedAt?: number }>();
+
+        localFriends.forEach((f) => mergedMap.set(f.peer.personalId, f));
+        serverAccepted.forEach((f: any) => mergedMap.set(f.peer.personalId, f));
+
+        const finalAccepted = Array.from(mergedMap.values());
+        setAcceptedConnections(finalAccepted);
+        vault.saveAcceptedFriends(finalAccepted);
+
         setIncomingRequests(data.incoming || []);
         setOutgoingRequests(data.outgoing || []);
         setBlockedUsers(data.blocked || []);
       }
     } catch (err) {
       console.warn('Could not fetch connections:', err);
+      const localFriends = vault.getAcceptedFriends();
+      if (localFriends.length > 0) {
+        setAcceptedConnections(localFriends);
+      }
     }
   }, []);
 
@@ -131,6 +147,11 @@ export default function LunarisSanctuaryApp() {
     const savedUser = vault.getCurrentUser();
     if (savedUser) {
       setCurrentUser(savedUser);
+      // Pre-populate with locally stored friends instantly
+      const localFriends = vault.getAcceptedFriends();
+      if (localFriends.length > 0) {
+        setAcceptedConnections(localFriends);
+      }
       setCurrentScreen('dashboard');
       fetchConnections(savedUser.personalId);
     } else {
@@ -712,6 +733,17 @@ export default function LunarisSanctuaryApp() {
   // Send Connection Request
   const handleSendConnectionRequest = async (targetId: string) => {
     if (!currentUser) return { success: false, message: 'Not authenticated' };
+
+    // Prevent redundant requests if already connected as friends
+    const existing =
+      acceptedConnections.find((c) => c.peer.personalId === targetId) ||
+      vault.getAcceptedFriends().find((c) => c.peer.personalId === targetId);
+
+    if (existing) {
+      handleStartChat(existing.peer);
+      return { success: true, message: 'Already connected as friends! Opening secure chat...' };
+    }
+
     const res = await fetch('/api/connections/request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -719,6 +751,12 @@ export default function LunarisSanctuaryApp() {
     });
     const data = await res.json();
     if (!res.ok) return { success: false, message: data.error || 'Failed to send request' };
+
+    if (data.alreadyConnected && data.connection) {
+      fetchConnections(currentUser.personalId);
+      return { success: true, message: 'You are already connected as friends!' };
+    }
+
     fetchConnections(currentUser.personalId);
     return { success: true, message: data.message };
   };
@@ -726,6 +764,25 @@ export default function LunarisSanctuaryApp() {
   // Respond to connection request (accept, reject, block)
   const handleRespondRequest = async (peerId: string, action: 'accept' | 'reject' | 'block') => {
     if (!currentUser) return;
+
+    if (action === 'accept') {
+      const incomingReq = incomingRequests.find((r) => r.peer.personalId === peerId);
+      if (incomingReq) {
+        vault.addAcceptedFriend({
+          connectionId: incomingReq.connectionId,
+          peer: incomingReq.peer,
+          updatedAt: Date.now(),
+        });
+        setAcceptedConnections((prev) => {
+          const filtered = prev.filter((p) => p.peer.personalId !== peerId);
+          return [incomingReq, ...filtered];
+        });
+      }
+    } else if (action === 'reject' || action === 'block') {
+      vault.removeAcceptedFriend(peerId);
+      setAcceptedConnections((prev) => prev.filter((p) => p.peer.personalId !== peerId));
+    }
+
     await fetch('/api/connections/respond', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -742,6 +799,8 @@ export default function LunarisSanctuaryApp() {
   const handleRemoveConnection = async (peerId: string) => {
     if (!currentUser) return;
     if (confirm('Remove this secure connection? Messaging and calling will be permanently locked.')) {
+      vault.removeAcceptedFriend(peerId);
+      setAcceptedConnections((prev) => prev.filter((p) => p.peer.personalId !== peerId));
       await handleRespondRequest(peerId, 'reject');
       if (activePeer?.personalId === peerId) {
         setActivePeer(null);

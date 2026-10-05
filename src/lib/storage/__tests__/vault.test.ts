@@ -113,4 +113,37 @@ describe('Arca Local Vault & Cryptographic Shredding', () => {
     vault.updateSettings({ optInReadReceipts: true });
     expect(vault.getSettings().optInReadReceipts).toBe(true);
   });
+
+  it('permanently stores and checks accepted friends so users never re-request', () => {
+    expect(vault.getAcceptedFriends()).toEqual([]);
+    expect(vault.isFriend(peerId)).toBe(false);
+
+    const friend = {
+      connectionId: 'conn_123',
+      peer: {
+        personalId: peerId,
+        displayName: 'Test Friend',
+        bio: 'Friend bio',
+        avatarId: 'avatar-2',
+        identityKeyPub: 'pub_key',
+        signedPreKeyPub: 'pre_key',
+        createdAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+
+    vault.addAcceptedFriend(friend);
+    expect(vault.isFriend(peerId)).toBe(true);
+    expect(vault.getAcceptedFriends().length).toBe(1);
+    expect(vault.getAcceptedFriends()[0].peer.displayName).toBe('Test Friend');
+
+    // Adding duplicate friend updates rather than creating duplicates
+    vault.addAcceptedFriend({ ...friend, updatedAt: Date.now() + 100 });
+    expect(vault.getAcceptedFriends().length).toBe(1);
+
+    // Remove friend
+    vault.removeAcceptedFriend(peerId);
+    expect(vault.isFriend(peerId)).toBe(false);
+    expect(vault.getAcceptedFriends().length).toBe(0);
+  });
 });

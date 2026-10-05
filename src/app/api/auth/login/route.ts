@@ -12,10 +12,10 @@ export async function POST(request: Request) {
 
     let user;
     if (identifier.startsWith('ID:')) {
-      user = serverStorage.getUserByPersonalId(identifier.toUpperCase().trim());
+      user = await serverStorage.getUserByPersonalIdAsync(identifier.toUpperCase().trim());
     } else {
       const emailHash = `hash_${Buffer.from(identifier.toLowerCase().trim()).toString('base64').slice(0, 24)}`;
-      user = serverStorage.getUserByEmailHash(emailHash);
+      user = await serverStorage.getUserByEmailHashAsync(emailHash);
     }
 
     if (!user) {

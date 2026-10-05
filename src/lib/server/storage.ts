@@ -120,15 +120,89 @@ class ServerStorage {
   public registerUser(user: ServerUser): void {
     this.users.set(user.personalId, user);
     this.emailMap.set(user.emailHash, user.personalId);
+    this.syncUserToUpstash(user).catch(() => {});
+  }
+
+  public async syncUserToUpstash(user: ServerUser): Promise<void> {
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (!url || !token) return;
+
+    try {
+      await fetch(`${url}/pipeline`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([
+          ['SET', `lunaris:user:${user.personalId}`, JSON.stringify(user)],
+          ['SET', `lunaris:email:${user.emailHash}`, user.personalId],
+        ]),
+      });
+    } catch (err) {
+      console.warn('Upstash user sync error:', err);
+    }
   }
 
   public getUserByPersonalId(personalId: string): ServerUser | undefined {
     return this.users.get(personalId);
   }
 
+  public async getUserByPersonalIdAsync(personalId: string): Promise<ServerUser | undefined> {
+    const local = this.users.get(personalId);
+    if (local) return local;
+
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (url && token) {
+      try {
+        const res = await fetch(`${url}/get/lunaris:user:${personalId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.result) {
+            const user: ServerUser = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+            this.users.set(user.personalId, user);
+            this.emailMap.set(user.emailHash, user.personalId);
+            return user;
+          }
+        }
+      } catch (err) {
+        console.warn('Upstash user fetch error:', err);
+      }
+    }
+    return undefined;
+  }
+
   public getUserByEmailHash(emailHash: string): ServerUser | undefined {
     const personalId = this.emailMap.get(emailHash);
     return personalId ? this.users.get(personalId) : undefined;
+  }
+
+  public async getUserByEmailHashAsync(emailHash: string): Promise<ServerUser | undefined> {
+    const local = this.getUserByEmailHash(emailHash);
+    if (local) return local;
+
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (url && token) {
+      try {
+        const res = await fetch(`${url}/get/lunaris:email:${emailHash}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.result) {
+            return await this.getUserByPersonalIdAsync(data.result);
+          }
+        }
+      } catch (err) {
+        console.warn('Upstash email fetch error:', err);
+      }
+    }
+    return undefined;
   }
 
   public deleteUser(personalId: string): void {
@@ -158,6 +232,28 @@ class ServerStorage {
     return this.connections.get(this.getConnectionKey(idA, idB));
   }
 
+  public syncConnectionToUpstash(conn: ConnectionRecord): Promise<void> {
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (!url || !token) return Promise.resolve();
+
+    const key = this.getConnectionKey(conn.userIdA, conn.userIdB);
+    return fetch(`${url}/pipeline`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([
+        ['SET', `lunaris:conn:${key}`, JSON.stringify(conn)],
+        ['SADD', `lunaris:user_conns:${conn.userIdA}`, key],
+        ['SADD', `lunaris:user_conns:${conn.userIdB}`, key],
+      ]),
+    }).then(() => {}).catch((err) => {
+      console.warn('Upstash connection sync error:', err);
+    });
+  }
+
   public createConnection(
     idA: string,
     idB: string,
@@ -169,6 +265,7 @@ class ServerStorage {
     if (existing) {
       existing.status = status;
       existing.updatedAt = Date.now();
+      this.syncConnectionToUpstash(existing);
       return existing;
     }
 
@@ -182,6 +279,7 @@ class ServerStorage {
       updatedAt: Date.now(),
     };
     this.connections.set(key, conn);
+    this.syncConnectionToUpstash(conn);
     return conn;
   }
 
@@ -195,13 +293,57 @@ class ServerStorage {
     if (conn) {
       conn.status = status;
       conn.updatedAt = Date.now();
+      this.syncConnectionToUpstash(conn);
     }
     return conn;
   }
 
   public removeConnection(idA: string, idB: string): boolean {
     const key = this.getConnectionKey(idA, idB);
-    return this.connections.delete(key);
+    const deleted = this.connections.delete(key);
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (url && token) {
+      fetch(`${url}/pipeline`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([
+          ['DEL', `lunaris:conn:${key}`],
+          ['SREM', `lunaris:user_conns:${idA}`, key],
+          ['SREM', `lunaris:user_conns:${idB}`, key],
+        ]),
+      }).catch(() => {});
+    }
+    return deleted;
+  }
+
+  public getConnectionAsync(idA: string, idB: string): Promise<ConnectionRecord | undefined> {
+    const local = this.getConnection(idA, idB);
+    if (local) return Promise.resolve(local);
+
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (url && token) {
+      const key = this.getConnectionKey(idA, idB);
+      return fetch(`${url}/get/lunaris:conn:${key}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && data.result) {
+            const conn: ConnectionRecord =
+              typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+            this.connections.set(key, conn);
+            return conn;
+          }
+          return undefined;
+        })
+        .catch(() => undefined);
+    }
+    return Promise.resolve(undefined);
   }
 
   public getConnectionsForUser(personalId: string): ConnectionRecord[] {
@@ -212,6 +354,46 @@ class ServerStorage {
       }
     }
     return result;
+  }
+
+  public async getConnectionsForUserAsync(personalId: string): Promise<ConnectionRecord[]> {
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    if (url && token) {
+      try {
+        const res = await fetch(`${url}/smembers/lunaris:user_conns:${personalId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.result) && data.result.length > 0) {
+            for (const key of data.result) {
+              if (!this.connections.has(key)) {
+                try {
+                  const connRes = await fetch(`${url}/get/lunaris:conn:${key}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  if (connRes.ok) {
+                    const connData = await connRes.json();
+                    if (connData.result) {
+                      const conn: ConnectionRecord =
+                        typeof connData.result === 'string' ? JSON.parse(connData.result) : connData.result;
+                      this.connections.set(key, conn);
+                    }
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Upstash user connections fetch error:', err);
+      }
+    }
+
+    return this.getConnectionsForUser(personalId);
   }
 
   // --- Ephemeral Relay Queue ---
