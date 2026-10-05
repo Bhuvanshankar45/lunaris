@@ -22,10 +22,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid ID format.' }, { status: 400 });
     }
 
+    // Attempt to lookup target user metadata if already synchronized
     const targetUser = await serverStorage.getUserByPersonalIdAsync(normTo);
-    if (!targetUser) {
-      return NextResponse.json({ error: 'Recipient user does not exist.' }, { status: 404 });
-    }
 
     // Check existing connection
     const existing = await serverStorage.getConnectionAsync(normFrom, normTo);

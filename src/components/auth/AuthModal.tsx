@@ -2,9 +2,10 @@
 
 import React, { useState } from 'react';
 import { Shield, Lock, Mail, User, Eye, EyeOff, X, KeyRound, CheckCircle2 } from 'lucide-react';
-import { generatePersonalId } from '@/lib/crypto/id-generator';
+import { generatePersonalId, normalizePersonalId } from '@/lib/crypto/id-generator';
 import { generateECDHKeyPair, exportPublicKey, exportPrivateKey } from '@/lib/crypto/primitives';
 import { vault } from '@/lib/storage/vault';
+import { UserProfile } from '@/types';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -26,6 +27,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [savedAccounts, setSavedAccounts] = useState<UserProfile[]>([]);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setSavedAccounts(vault.getSavedAccounts());
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -80,7 +88,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         });
 
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Login failed');
+        if (!res.ok) {
+          // If serverless memory reset, verify if account exists in local device vault
+          const normalized = normalizePersonalId(email);
+          const localAcc = vault.getSavedAccounts().find((a) => a.personalId === normalized);
+          if (localAcc) {
+            onSuccess(localAcc, `session_${localAcc.personalId}`);
+            onClose();
+            return;
+          }
+          throw new Error(data.error || 'Login failed');
+        }
 
         onSuccess(data.user, data.token);
         onClose();
@@ -190,6 +208,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 className="w-full pl-9 pr-3.5 py-2 rounded-xl border border-[#CBCCC7] bg-[#F2F2EB] text-xs text-[#1C1E1B] focus:border-[#525C51] focus:ring-1 focus:ring-[#525C51] outline-hidden font-sans"
               />
             </div>
+            {mode === 'login' && savedAccounts.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                <span className="text-[10px] text-[#6E746A]">Saved on device:</span>
+                {savedAccounts.map((acc) => (
+                  <button
+                    key={acc.personalId}
+                    type="button"
+                    onClick={() => setEmail(acc.personalId)}
+                    className="px-2 py-0.5 rounded-md bg-[#CBCCC7]/60 hover:bg-[#B8AB90] text-[10px] font-mono font-bold text-[#1C1E1B] transition-colors"
+                  >
+                    {acc.personalId}
+                  </button>
+                ))}
+              </div>
+            )}
             {mode === 'register' && (
               <p className="text-[10px] text-[#6E746A] mt-1">
                 Privacy guarantee: Your email is hashed with HMAC-SHA256 and never shared with other users.

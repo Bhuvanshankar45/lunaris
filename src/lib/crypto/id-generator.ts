@@ -31,8 +31,17 @@ export function isValidPersonalId(id: string): boolean {
 }
 
 export function normalizePersonalId(input: string): string {
-  const trimmed = input.trim().toUpperCase();
-  if (trimmed.startsWith('ID:')) return trimmed;
-  if (/^[A-Z0-9]{8}$/.test(trimmed)) return `ID:${trimmed}`;
-  return trimmed;
+  if (!input || typeof input !== 'string') return '';
+  // Remove all internal whitespace, tabs, and dashes
+  const cleaned = input.trim().toUpperCase().replace(/[\s\-_]/g, '');
+  if (cleaned.startsWith('ID:')) {
+    return cleaned;
+  }
+  if (cleaned.startsWith('ID')) {
+    return `ID:${cleaned.substring(2)}`;
+  }
+  if (/^[A-Z0-9]{8}$/.test(cleaned)) {
+    return `ID:${cleaned}`;
+  }
+  return cleaned;
 }

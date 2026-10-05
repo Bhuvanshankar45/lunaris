@@ -10,6 +10,7 @@ import { UserProfile, PeerContact } from '@/types';
 
 const STORAGE_KEYS = {
   CURRENT_USER: 'lunaris_current_user',
+  SAVED_ACCOUNTS: 'lunaris_saved_accounts',
   IDENTITY_KEYS: 'lunaris_identity_keys',
   PREKEY_BUNDLE: 'lunaris_prekey_bundle',
   SESSIONS: 'lunaris_sessions_vault',
@@ -89,7 +90,38 @@ class LocalVault {
       storage.removeItem(STORAGE_KEYS.CURRENT_USER);
     } else {
       storage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
+      this.saveAccount(user);
     }
+  }
+
+  // --- Saved Accounts for Fast Multi-Account Switching ---
+  public getSavedAccounts(): UserProfile[] {
+    const storage = this.getStorage();
+    if (!storage) return [];
+    const raw = storage.getItem(STORAGE_KEYS.SAVED_ACCOUNTS);
+    if (!raw) return [];
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  public saveAccount(user: UserProfile): void {
+    const storage = this.getStorage();
+    if (!storage) return;
+    const accounts = this.getSavedAccounts();
+    const filtered = accounts.filter((a) => a.personalId !== user.personalId);
+    filtered.unshift(user);
+    storage.setItem(STORAGE_KEYS.SAVED_ACCOUNTS, JSON.stringify(filtered));
+  }
+
+  public removeSavedAccount(personalId: string): void {
+    const storage = this.getStorage();
+    if (!storage) return;
+    const accounts = this.getSavedAccounts();
+    const filtered = accounts.filter((a) => a.personalId !== personalId);
+    storage.setItem(STORAGE_KEYS.SAVED_ACCOUNTS, JSON.stringify(filtered));
   }
 
   // --- Messages ---

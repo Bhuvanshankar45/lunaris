@@ -146,4 +146,37 @@ describe('Arca Local Vault & Cryptographic Shredding', () => {
     expect(vault.isFriend(peerId)).toBe(false);
     expect(vault.getAcceptedFriends().length).toBe(0);
   });
+
+  it('saves and switches multiple accounts on this device so IDs are permanent', () => {
+    expect(vault.getSavedAccounts()).toEqual([]);
+
+    const user1: any = {
+      id: 'usr_1',
+      personalId: 'ID:WTYJ5425',
+      displayName: 'User 1',
+    };
+    const user2: any = {
+      id: 'usr_2',
+      personalId: 'ID:ABCD1234',
+      displayName: 'User 2',
+    };
+
+    vault.saveCurrentUser(user1);
+    expect(vault.getCurrentUser()?.personalId).toBe('ID:WTYJ5425');
+    expect(vault.getSavedAccounts().length).toBe(1);
+
+    vault.saveCurrentUser(user2);
+    expect(vault.getCurrentUser()?.personalId).toBe('ID:ABCD1234');
+    expect(vault.getSavedAccounts().length).toBe(2);
+
+    // Logging out does not delete saved accounts
+    vault.saveCurrentUser(null);
+    expect(vault.getCurrentUser()).toBe(null);
+    expect(vault.getSavedAccounts().length).toBe(2);
+    expect(vault.getSavedAccounts().some((a) => a.personalId === 'ID:WTYJ5425')).toBe(true);
+
+    vault.removeSavedAccount('ID:ABCD1234');
+    expect(vault.getSavedAccounts().length).toBe(1);
+    expect(vault.getSavedAccounts()[0].personalId).toBe('ID:WTYJ5425');
+  });
 });

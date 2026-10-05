@@ -25,6 +25,7 @@ import { DEMO_PREKEYS_PRIV } from '@/lib/crypto/demo-keys';
 import { WifiOff, Radio, Phone, PhoneOff, Video, VideoOff } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { WebRTCService } from '@/lib/webrtc/webrtc-service';
+import { normalizePersonalId } from '@/lib/crypto/id-generator';
 
 export default function LunarisSanctuaryApp() {
   // App Navigation & Session
@@ -289,6 +290,31 @@ export default function LunarisSanctuaryApp() {
                   }
                 }
                 if (payload && payload.callAction) {
+                  if (payload.callAction === 'connection_request') {
+                    fetchConnections(currentUser.personalId);
+                    if (payload.sender) {
+                      setIncomingRequests((prev) => {
+                        if (prev.some((r) => r.peer.personalId === payload.sender.personalId)) return prev;
+                        return [
+                          {
+                            connectionId: `conn_${Date.now()}`,
+                            peer: {
+                              personalId: payload.sender.personalId,
+                              displayName: payload.sender.displayName || payload.sender.personalId,
+                              bio: '',
+                              avatarId: payload.sender.avatarId || 'avatar-1',
+                              identityKeyPub: '',
+                              signedPreKeyPub: '',
+                              createdAt: Date.now(),
+                            },
+                            createdAt: Date.now(),
+                          },
+                          ...prev,
+                        ];
+                      });
+                    }
+                    continue;
+                  }
                   handleIncomingCallSignal(packet.senderId, payload);
                 }
               } catch (err) {
@@ -734,10 +760,12 @@ export default function LunarisSanctuaryApp() {
   const handleSendConnectionRequest = async (targetId: string) => {
     if (!currentUser) return { success: false, message: 'Not authenticated' };
 
+    const normTarget = normalizePersonalId(targetId);
+
     // Prevent redundant requests if already connected as friends
     const existing =
-      acceptedConnections.find((c) => c.peer.personalId === targetId) ||
-      vault.getAcceptedFriends().find((c) => c.peer.personalId === targetId);
+      acceptedConnections.find((c) => c.peer.personalId === normTarget) ||
+      vault.getAcceptedFriends().find((c) => c.peer.personalId === normTarget);
 
     if (existing) {
       handleStartChat(existing.peer);
@@ -747,10 +775,44 @@ export default function LunarisSanctuaryApp() {
     const res = await fetch('/api/connections/request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fromUserId: currentUser.personalId, toUserId: targetId }),
+      body: JSON.stringify({ fromUserId: currentUser.personalId, toUserId: normTarget }),
     });
     const data = await res.json();
     if (!res.ok) return { success: false, message: data.error || 'Failed to send request' };
+
+    // Also dispatch an encrypted relay notification so the recipient is pinged immediately
+    const signalPacket: EncryptedPacket = {
+      packetId: `conn_req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      senderId: currentUser.personalId,
+      recipientId: normTarget,
+      type: 'signal_call',
+      ephemeralPublicKey: currentUser.identityKeyPub || '',
+      sequenceNumber: 0,
+      previousChainLength: 0,
+      iv: 'conn_req_iv',
+      ciphertext: btoa(
+        unescape(
+          encodeURIComponent(
+            JSON.stringify({
+              callAction: 'connection_request',
+              sender: {
+                personalId: currentUser.personalId,
+                displayName: currentUser.displayName,
+                avatarId: currentUser.avatarId,
+              },
+            })
+          )
+        )
+      ),
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    };
+
+    fetch('/api/relay/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(signalPacket),
+    }).catch(() => {});
 
     if (data.alreadyConnected && data.connection) {
       fetchConnections(currentUser.personalId);
@@ -1134,6 +1196,16 @@ export default function LunarisSanctuaryApp() {
             onOpenAuth={(m) => {
               setAuthInitialMode(m);
               setAuthModalOpen(true);
+            }}
+            onSelectAccount={(account) => {
+              vault.saveCurrentUser(account);
+              setCurrentUser(account);
+              const localFriends = vault.getAcceptedFriends();
+              if (localFriends.length > 0) {
+                setAcceptedConnections(localFriends);
+              }
+              setCurrentScreen('dashboard');
+              fetchConnections(account.personalId);
             }}
           />
         )}

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { serverStorage } from '@/lib/server/storage';
+import { normalizePersonalId, isValidPersonalId } from '@/lib/crypto/id-generator';
 
 export async function POST(request: Request) {
   try {
@@ -11,8 +12,9 @@ export async function POST(request: Request) {
     }
 
     let user;
-    if (identifier.startsWith('ID:')) {
-      user = await serverStorage.getUserByPersonalIdAsync(identifier.toUpperCase().trim());
+    const normalizedId = normalizePersonalId(identifier);
+    if (isValidPersonalId(normalizedId)) {
+      user = await serverStorage.getUserByPersonalIdAsync(normalizedId);
     } else {
       const emailHash = `hash_${Buffer.from(identifier.toLowerCase().trim()).toString('base64').slice(0, 24)}`;
       user = await serverStorage.getUserByEmailHashAsync(emailHash);
