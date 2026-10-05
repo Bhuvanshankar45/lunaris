@@ -53,6 +53,10 @@ export default function LunarisSanctuaryApp() {
 
   // Active Chat & Messages
   const [activePeer, setActivePeer] = useState<PeerContact | null>(null);
+  const activePeerRef = useRef<PeerContact | null>(null);
+  useEffect(() => {
+    activePeerRef.current = activePeer;
+  }, [activePeer]);
   const [messages, setMessages] = useState<StoredLocalMessage[]>([]);
   const [safetyNumber, setSafetyNumber] = useState<string>('');
   const [isSafetyVerified, setIsSafetyVerified] = useState(false);
@@ -450,7 +454,10 @@ export default function LunarisSanctuaryApp() {
                           identityKeyPub: payload.identityKeyPub || f.peer.identityKeyPub,
                         },
                       }));
-                      if (activePeer && activePeer.personalId === packet.senderId) {
+                      if (
+                        activePeerRef.current &&
+                        normalizePersonalId(activePeerRef.current.personalId) === normalizePersonalId(packet.senderId)
+                      ) {
                         setActivePeer((prev) =>
                           prev
                             ? {
@@ -461,6 +468,16 @@ export default function LunarisSanctuaryApp() {
                             : null
                         );
                       }
+                    }
+                    continue;
+                  }
+                  if (payload.callAction === 'msg_delivered' && payload.msgId) {
+                    vault.updateMessage(packet.senderId, payload.msgId, (m) => ({ ...m, status: 'delivered' }));
+                    if (
+                      activePeerRef.current &&
+                      normalizePersonalId(activePeerRef.current.personalId) === normalizePersonalId(packet.senderId)
+                    ) {
+                      setMessages(vault.getMessagesForChat(packet.senderId));
                     }
                     continue;
                   }
@@ -486,99 +503,178 @@ export default function LunarisSanctuaryApp() {
               }
             }
 
-            const privKey =
-              vault.getSignedPreKeyPriv(currentUser.personalId) ||
-              getFallbackPreKeyPriv(currentUser.personalId);
+            const customPrivKey = vault.getSignedPreKeyPriv(currentUser.personalId);
+            const fallbackPrivKey = getFallbackPreKeyPriv(currentUser.personalId);
+            const candidatePrivKeys = [customPrivKey, fallbackPrivKey].filter(Boolean) as string[];
 
-            if (!session && privKey && packet.ephemeralPublicKey) {
-              try {
-                session = await DoubleRatchetSession.respondToSession(
-                  currentUser.personalId,
-                  packet.senderId,
-                  privKey,
-                  packet.ephemeralPublicKey
-                );
-                ratchetSessionsRef.current.set(packet.senderId, session);
-                vault.saveSession(packet.senderId, session.getState());
-              } catch (initErr) {
-                console.warn('Responder session init error:', initErr);
-              }
-            }
+            let plaintext: any = null;
 
+            // Attempt decryption with existing active session first
             if (session) {
-              let plaintext: any;
               try {
                 plaintext = await session.decrypt(packet);
                 vault.saveSession(packet.senderId, session.getState());
               } catch (decErr) {
-                console.warn('Could not decrypt packet with active session, attempting responder re-sync:', decErr);
-                // Self-healing fallback: If existing session was out of sync (e.g. premature initiateSession or re-sent key)
-                if (privKey && packet.ephemeralPublicKey) {
-                  try {
-                    const freshSession = await DoubleRatchetSession.respondToSession(
-                      currentUser.personalId,
-                      packet.senderId,
-                      privKey,
-                      packet.ephemeralPublicKey
-                    );
-                    plaintext = await freshSession.decrypt(packet);
+                console.warn('Active session decrypt error, will attempt responder re-sync with candidate keys:', decErr);
+                plaintext = null;
+              }
+            }
+
+            // If session did not decrypt, attempt responder session creation with candidate keys (custom private pre-key, then fallback private pre-key)
+            if (!plaintext && packet.ephemeralPublicKey) {
+              for (const candidateKey of candidatePrivKeys) {
+                try {
+                  const freshSession = await DoubleRatchetSession.respondToSession(
+                    currentUser.personalId,
+                    packet.senderId,
+                    candidateKey,
+                    packet.ephemeralPublicKey
+                  );
+                  const candidatePlaintext = await freshSession.decrypt(packet);
+                  if (candidatePlaintext) {
+                    plaintext = candidatePlaintext;
                     session = freshSession;
                     ratchetSessionsRef.current.set(packet.senderId, session);
                     vault.saveSession(packet.senderId, session.getState());
-                  } catch (freshDecErr) {
-                    console.warn('Responder re-sync decryption also failed:', freshDecErr);
+                    break;
                   }
+                } catch {
+                  // Try next candidate key
                 }
               }
+            }
 
-              if (plaintext) {
-                // If this is an in-band call action
-                if (plaintext.callAction) {
-                  handleIncomingCallSignal(packet.senderId, plaintext);
-                  continue;
-                }
+            if (plaintext) {
+              // If this is an in-band call action
+              if (plaintext.callAction) {
+                handleIncomingCallSignal(packet.senderId, plaintext);
+                continue;
+              }
 
-                // If media is attached, decrypt file blob locally
-                let localFile = undefined;
-                if (plaintext.file) {
-                  const { decryptedBlob } = await decryptFileFromRelay({
-                    name: plaintext.file.name,
-                    size: plaintext.file.size,
-                    mimeType: plaintext.file.mimeType,
-                    encryptedBlobBase64: plaintext.file.encryptedBlobBase64,
-                    fileKeyBase64: plaintext.file.fileKeyBase64,
-                    ivBase64: plaintext.file.ivBase64,
-                  });
-                  localFile = {
-                    name: plaintext.file.name,
-                    size: plaintext.file.size,
-                    mimeType: plaintext.file.mimeType,
-                    dataUrl: URL.createObjectURL(decryptedBlob),
-                  };
-                }
-
-                const receivedMsg: StoredLocalMessage = {
-                  id: plaintext.id || packet.packetId,
-                  chatId: packet.senderId,
-                  senderId: packet.senderId,
-                  recipientId: currentUser.personalId,
-                  text: plaintext.text,
-                  replyToId: plaintext.replyToId,
-                  timestamp: packet.createdAt,
-                  status: 'delivered',
-                  file: localFile,
-                  expiresAt: packet.disappearingTimerSeconds
-                    ? Date.now() + packet.disappearingTimerSeconds * 1000
-                    : undefined,
+              // If media is attached, decrypt file blob locally
+              let localFile = undefined;
+              if (plaintext.file) {
+                const { decryptedBlob } = await decryptFileFromRelay({
+                  name: plaintext.file.name,
+                  size: plaintext.file.size,
+                  mimeType: plaintext.file.mimeType,
+                  encryptedBlobBase64: plaintext.file.encryptedBlobBase64,
+                  fileKeyBase64: plaintext.file.fileKeyBase64,
+                  ivBase64: plaintext.file.ivBase64,
+                });
+                localFile = {
+                  name: plaintext.file.name,
+                  size: plaintext.file.size,
+                  mimeType: plaintext.file.mimeType,
+                  dataUrl: URL.createObjectURL(decryptedBlob),
                 };
-
-                vault.saveMessage(packet.senderId, receivedMsg);
-
-                // If currently viewing this chat, refresh messages
-                if (activePeer && activePeer.personalId === packet.senderId) {
-                  setMessages(vault.getMessagesForChat(packet.senderId));
-                }
               }
+
+              const receivedMsg: StoredLocalMessage = {
+                id: plaintext.id || packet.packetId,
+                chatId: packet.senderId,
+                senderId: packet.senderId,
+                recipientId: currentUser.personalId,
+                text: plaintext.text,
+                replyToId: plaintext.replyToId,
+                timestamp: packet.createdAt,
+                status: 'delivered',
+                file: localFile,
+                expiresAt: packet.disappearingTimerSeconds
+                  ? Date.now() + packet.disappearingTimerSeconds * 1000
+                  : undefined,
+              };
+
+              vault.saveMessage(packet.senderId, receivedMsg);
+
+              // Auto-add sender to accepted friends / connections if not already present
+              const senderNorm = normalizePersonalId(packet.senderId);
+              const isFriend = vault.isFriend(packet.senderId);
+              if (!isFriend) {
+                const storedNick = vault.getNickname(packet.senderId);
+                const newFriend = {
+                  connectionId: `conn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                  peer: {
+                    personalId: packet.senderId,
+                    displayName: storedNick || packet.senderId,
+                    bio: '',
+                    avatarId: 'avatar-1',
+                    identityKeyPub: packet.ephemeralPublicKey || '',
+                    signedPreKeyPub: packet.ephemeralPublicKey || '',
+                    createdAt: Date.now(),
+                    nickname: storedNick || undefined,
+                  },
+                  updatedAt: Date.now(),
+                };
+                vault.addAcceptedFriend(newFriend);
+                setAcceptedConnections((prev) => {
+                  if (prev.some((c) => normalizePersonalId(c.peer.personalId) === senderNorm)) {
+                    return prev;
+                  }
+                  return [newFriend, ...prev];
+                });
+                // Also fetch peer profile in background to enrich display name and avatar
+                fetch(`/api/users/lookup?id=${encodeURIComponent(packet.senderId)}`)
+                  .then((r) => (r.ok ? r.json() : null))
+                  .then((uData) => {
+                    if (uData && uData.user) {
+                      const enrichedFriend = {
+                        ...newFriend,
+                        peer: {
+                          ...newFriend.peer,
+                          displayName: storedNick || uData.user.displayName || packet.senderId,
+                          avatarId: uData.user.avatarId || 'avatar-1',
+                          bio: uData.user.bio || '',
+                          nickname: storedNick || undefined,
+                        },
+                      };
+                      vault.updateAcceptedFriend(packet.senderId, () => enrichedFriend);
+                      setAcceptedConnections((prev) =>
+                        prev.map((c) =>
+                          normalizePersonalId(c.peer.personalId) === senderNorm ? enrichedFriend : c
+                        )
+                      );
+                    }
+                  })
+                  .catch(() => {});
+              }
+
+              // If currently viewing this chat, refresh messages immediately
+              if (
+                activePeerRef.current &&
+                normalizePersonalId(activePeerRef.current.personalId) === senderNorm
+              ) {
+                setMessages(vault.getMessagesForChat(packet.senderId));
+              }
+
+              // Send immediate delivery confirmation back to sender
+              const ackPacket: EncryptedPacket = {
+                packetId: `ack_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                senderId: currentUser.personalId,
+                recipientId: packet.senderId,
+                type: 'signal_call',
+                ephemeralPublicKey: '',
+                sequenceNumber: 0,
+                previousChainLength: 0,
+                iv: 'ack_iv',
+                ciphertext: btoa(
+                  unescape(
+                    encodeURIComponent(
+                      JSON.stringify({
+                        callAction: 'msg_delivered',
+                        msgId: receivedMsg.id,
+                      })
+                    )
+                  )
+                ),
+                createdAt: Date.now(),
+                expiresAt: Date.now() + 60000,
+              };
+              fetch('/api/relay/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(ackPacket),
+              }).catch(() => {});
             }
           }
         }
@@ -586,7 +682,7 @@ export default function LunarisSanctuaryApp() {
     } catch {
       // offline or network hiccup
     }
-  }, [currentUser, activePeer, handleIncomingCallSignal]);
+  }, [currentUser, handleIncomingCallSignal]);
 
   // Periodic polling for real-time messages & call signaling
   useEffect(() => {
@@ -598,7 +694,7 @@ export default function LunarisSanctuaryApp() {
       currentScreen === 'active-call' ||
       currentScreen === 'call-lobby'
     );
-    const intervalTime = isCallActive ? 500 : 2500;
+    const intervalTime = isCallActive ? 500 : currentScreen === 'chat' ? 1000 : 2000;
     const interval = setInterval(() => {
       pollRelayPackets();
     }, intervalTime);
@@ -628,6 +724,9 @@ export default function LunarisSanctuaryApp() {
     // Load local messages
     const localMsgs = vault.getMessagesForChat(peer.personalId);
     setMessages(localMsgs);
+
+    // Immediate poll to retrieve any pending packets in relay
+    pollRelayPackets();
 
     // Compute deterministic 60-digit safety number
     if (currentUser) {
@@ -846,6 +945,7 @@ export default function LunarisSanctuaryApp() {
         vault.updateMessage(activePeer.personalId, msgId, (m) => ({ ...m, status: 'sent' }));
       }
       setMessages(vault.getMessagesForChat(activePeer.personalId));
+      pollRelayPackets();
     } catch (err) {
       console.warn('Relay failed:', err);
       vault.updateMessage(activePeer.personalId, msgId, (m) => ({ ...m, status: 'sent' }));

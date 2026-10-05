@@ -5,6 +5,7 @@
  */
 
 import { EncryptedPacket } from '../crypto/types';
+import { normalizePersonalId } from '../crypto/id-generator';
 import fs from 'fs';
 import path from 'path';
 
@@ -75,6 +76,64 @@ class ServerStorage {
     }
   }
 
+  private getRelayStorageFilePath(): string | null {
+    try {
+      const dataDir = path.join(process.cwd(), '.data');
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      return path.join(dataDir, 'lunaris-relay.json');
+    } catch {
+      return null;
+    }
+  }
+
+  private loadRelayQueueFromDisk(): EncryptedPacket[] {
+    const filePath = this.getRelayStorageFilePath();
+    if (!filePath || !fs.existsSync(filePath)) {
+      return this.ephemeralRelayQueue;
+    }
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      if (!raw || !raw.trim()) return this.ephemeralRelayQueue;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const now = Date.now();
+        const valid = parsed.filter((p: EncryptedPacket) => p && p.expiresAt > now);
+        // Merge with in-memory queue, deduplicating by packetId
+        const map = new Map<string, EncryptedPacket>();
+        for (const p of this.ephemeralRelayQueue) {
+          if (p.expiresAt > now) map.set(p.packetId, p);
+        }
+        for (const p of valid) {
+          map.set(p.packetId, p);
+        }
+        this.ephemeralRelayQueue = Array.from(map.values());
+      }
+    } catch {
+      // In multi-worker Next.js environments, ignore concurrent read contention
+    }
+    return this.ephemeralRelayQueue;
+  }
+
+  private saveRelayQueueToDisk(packets?: EncryptedPacket[]): void {
+    const filePath = this.getRelayStorageFilePath();
+    if (!filePath) return;
+    try {
+      const toSave = packets || this.ephemeralRelayQueue;
+      const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).substring(2, 6)}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(toSave), 'utf-8');
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch {
+        fs.copyFileSync(tmpPath, filePath);
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
+    } catch {
+      // Silently handle concurrent write conflicts
+    }
+  }
+
   private loadFromDisk(): void {
     const filePath = this.getStorageFilePath();
     if (!filePath || !fs.existsSync(filePath)) return;
@@ -84,14 +143,19 @@ class ServerStorage {
       const data = JSON.parse(raw);
       if (Array.isArray(data.users)) {
         for (const u of data.users) {
-          this.users.set(u.personalId, u);
-          this.emailMap.set(u.emailHash, u.personalId);
+          const normPersonalId = normalizePersonalId(u.personalId) || u.personalId;
+          this.users.set(normPersonalId, { ...u, personalId: normPersonalId });
+          if (u.emailHash) {
+            this.emailMap.set(u.emailHash, normPersonalId);
+          }
         }
       }
       if (Array.isArray(data.connections)) {
         for (const c of data.connections) {
-          const key = this.getConnectionKey(c.userIdA, c.userIdB);
-          this.connections.set(key, c);
+          const normA = normalizePersonalId(c.userIdA);
+          const normB = normalizePersonalId(c.userIdB);
+          const key = this.getConnectionKey(normA, normB);
+          this.connections.set(key, { ...c, userIdA: normA, userIdB: normB });
         }
       }
     } catch {
@@ -124,6 +188,7 @@ class ServerStorage {
   constructor() {
     this.seedDemoUsers();
     this.loadFromDisk();
+    this.loadRelayQueueFromDisk();
     // Periodic ephemeral packet expiration sweep (every 30 seconds)
     if (typeof setInterval !== 'undefined') {
       setInterval(() => this.purgeExpiredRelayPackets(), 30000);
@@ -355,11 +420,18 @@ class ServerStorage {
 
   // --- Connections & Pairing ---
   private getConnectionKey(idA: string, idB: string): string {
-    return idA < idB ? `${idA}:${idB}` : `${idB}:${idA}`;
+    const normA = normalizePersonalId(idA);
+    const normB = normalizePersonalId(idB);
+    return normA < normB ? `${normA}:${normB}` : `${normB}:${normA}`;
   }
 
   public getConnection(idA: string, idB: string): ConnectionRecord | undefined {
-    return this.connections.get(this.getConnectionKey(idA, idB));
+    let conn = this.connections.get(this.getConnectionKey(idA, idB));
+    if (!conn) {
+      this.loadFromDisk();
+      conn = this.connections.get(this.getConnectionKey(idA, idB));
+    }
+    return conn;
   }
 
   public syncConnectionToUpstash(conn: ConnectionRecord): Promise<void> {
@@ -392,8 +464,14 @@ class ServerStorage {
     initiatorMeta?: { displayName?: string; avatarId?: string; bio?: string; identityKeyPub?: string; signedPreKeyPub?: string },
     targetMeta?: { displayName?: string; avatarId?: string; bio?: string; identityKeyPub?: string; signedPreKeyPub?: string }
   ): ConnectionRecord {
-    const key = this.getConnectionKey(idA, idB);
-    const existing = this.connections.get(key);
+    const normA = normalizePersonalId(idA);
+    const normB = normalizePersonalId(idB);
+    const key = this.getConnectionKey(normA, normB);
+    let existing = this.connections.get(key);
+    if (!existing) {
+      this.loadFromDisk();
+      existing = this.connections.get(key);
+    }
     if (existing) {
       existing.status = status;
       existing.updatedAt = Date.now();
@@ -414,9 +492,9 @@ class ServerStorage {
 
     const conn: ConnectionRecord = {
       id: `conn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      userIdA: idA < idB ? idA : idB,
-      userIdB: idA < idB ? idB : idA,
-      initiatorId,
+      userIdA: normA < normB ? normA : normB,
+      userIdB: normA < normB ? normB : normA,
+      initiatorId: normalizePersonalId(initiatorId),
       initiatorDisplayName: initiatorMeta?.displayName,
       initiatorAvatarId: initiatorMeta?.avatarId,
       initiatorBio: initiatorMeta?.bio,
@@ -443,7 +521,11 @@ class ServerStorage {
     status: ConnectionRecord['status']
   ): ConnectionRecord | undefined {
     const key = this.getConnectionKey(idA, idB);
-    const conn = this.connections.get(key);
+    let conn = this.connections.get(key);
+    if (!conn) {
+      this.loadFromDisk();
+      conn = this.connections.get(key);
+    }
     if (conn) {
       conn.status = status;
       conn.updatedAt = Date.now();
@@ -507,9 +589,14 @@ class ServerStorage {
   }
 
   public getConnectionsForUser(personalId: string): ConnectionRecord[] {
+    const norm = normalizePersonalId(personalId);
+    this.loadFromDisk();
     const result: ConnectionRecord[] = [];
     for (const conn of this.connections.values()) {
-      if (conn.userIdA === personalId || conn.userIdB === personalId) {
+      if (
+        normalizePersonalId(conn.userIdA) === norm ||
+        normalizePersonalId(conn.userIdB) === norm
+      ) {
         result.push(conn);
       }
     }
@@ -521,7 +608,8 @@ class ServerStorage {
     const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
     if (url && token) {
       try {
-        const res = await fetch(`${url}/smembers/lunaris:user_conns:${personalId}`, {
+        const normId = normalizePersonalId(personalId);
+        const res = await fetch(`${url}/smembers/lunaris:user_conns:${normId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.ok) {
@@ -558,7 +646,16 @@ class ServerStorage {
 
   // --- Ephemeral Relay Queue ---
   public enqueueRelayPacket(packet: EncryptedPacket): boolean {
-    const conn = this.getConnection(packet.senderId, packet.recipientId);
+    const normSender = normalizePersonalId(packet.senderId);
+    const normRecipient = normalizePersonalId(packet.recipientId);
+    packet.senderId = normSender;
+    packet.recipientId = normRecipient;
+
+    let conn = this.getConnection(normSender, normRecipient);
+    if (!conn) {
+      this.loadFromDisk();
+      conn = this.getConnection(normSender, normRecipient);
+    }
     if (conn && conn.status === 'blocked') {
       return false; // Blocked
     }
@@ -571,7 +668,15 @@ class ServerStorage {
       }
     }
 
-    this.ephemeralRelayQueue.push(packet);
+    // Load fresh queue from disk to prevent overwriting packets from other worker processes
+    this.loadRelayQueueFromDisk();
+
+    // Deduplicate by packetId
+    if (!this.ephemeralRelayQueue.some((p) => p.packetId === packet.packetId)) {
+      this.ephemeralRelayQueue.push(packet);
+    }
+
+    this.saveRelayQueueToDisk();
 
     // If Upstash Redis or Vercel KV is configured, sync to cloud store
     this.syncPacketToUpstash(packet).catch(() => {});
@@ -585,7 +690,8 @@ class ServerStorage {
     if (!url || !token) return;
 
     try {
-      const key = `lunaris:relay:${packet.recipientId}`;
+      const normRecipient = normalizePersonalId(packet.recipientId);
+      const key = `lunaris:relay:${normRecipient}`;
       const serialized = JSON.stringify(packet);
 
       // Use POST /pipeline with JSON body to prevent HTTP 414 URI Too Long errors
@@ -619,10 +725,19 @@ class ServerStorage {
   }
 
   public dequeueRelayPacketsForRecipient(recipientPersonalId: string): EncryptedPacket[] {
+    const normRecipient = normalizePersonalId(recipientPersonalId);
+    this.loadRelayQueueFromDisk();
     this.purgeExpiredRelayPackets();
-    const packets = this.ephemeralRelayQueue.filter((p) => p.recipientId === recipientPersonalId);
-    this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter((p) => p.recipientId !== recipientPersonalId);
-    return packets;
+
+    const delivered = this.ephemeralRelayQueue.filter(
+      (p) => normalizePersonalId(p.recipientId) === normRecipient
+    );
+    this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter(
+      (p) => normalizePersonalId(p.recipientId) !== normRecipient
+    );
+
+    this.saveRelayQueueToDisk();
+    return delivered;
   }
 
   public async dequeueRelayPacketsAsync(recipientPersonalId: string): Promise<EncryptedPacket[]> {
@@ -632,7 +747,8 @@ class ServerStorage {
     const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
     if (url && token) {
       try {
-        const key = `lunaris:relay:${recipientPersonalId}`;
+        const normRecipient = normalizePersonalId(recipientPersonalId);
+        const key = `lunaris:relay:${normRecipient}`;
         const res = await fetch(`${url}/lrange/${key}/0/-1`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -670,24 +786,34 @@ class ServerStorage {
   }
 
   public acknowledgePacket(packetId: string): void {
+    this.loadRelayQueueFromDisk();
     this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter((p) => p.packetId !== packetId);
+    this.saveRelayQueueToDisk();
   }
 
   public purgeExpiredRelayPackets(): number {
     const now = Date.now();
     const initialCount = this.ephemeralRelayQueue.length;
     this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter((p) => p.expiresAt > now);
-    return initialCount - this.ephemeralRelayQueue.length;
+    const purged = initialCount - this.ephemeralRelayQueue.length;
+    if (purged > 0) {
+      this.saveRelayQueueToDisk();
+    }
+    return purged;
   }
 
   public clearChatRelayPackets(idA: string, idB: string): void {
+    const normA = normalizePersonalId(idA);
+    const normB = normalizePersonalId(idB);
+    this.loadRelayQueueFromDisk();
     this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter(
       (p) =>
         !(
-          (p.senderId === idA && p.recipientId === idB) ||
-          (p.senderId === idB && p.recipientId === idA)
+          (normalizePersonalId(p.senderId) === normA && normalizePersonalId(p.recipientId) === normB) ||
+          (normalizePersonalId(p.senderId) === normB && normalizePersonalId(p.recipientId) === normA)
         )
     );
+    this.saveRelayQueueToDisk();
   }
 
   // --- Abuse Reporting ---

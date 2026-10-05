@@ -1,15 +1,18 @@
 import { NextResponse } from 'next/server';
 import { serverStorage } from '@/lib/server/storage';
+import { normalizePersonalId } from '@/lib/crypto/id-generator';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const recipientId = searchParams.get('recipientId');
+  const rawRecipientId = searchParams.get('recipientId');
   const pubKey = searchParams.get('pubKey');
   const preKey = searchParams.get('preKey');
 
-  if (!recipientId) {
+  if (!rawRecipientId) {
     return NextResponse.json({ error: 'Recipient ID required.' }, { status: 400 });
   }
+
+  const recipientId = normalizePersonalId(rawRecipientId);
 
   // Auto-sync client's active public keys into server storage heartbeat
   if (pubKey && preKey) {
