@@ -230,13 +230,13 @@ class ServerStorage {
 
     this.ephemeralRelayQueue.push(packet);
 
-    // If Upstash Redis or Vercel KV is configured, fire-and-forget sync to cloud store
-    this.syncPacketToUpstash(packet);
+    // If Upstash Redis or Vercel KV is configured, sync to cloud store
+    this.syncPacketToUpstash(packet).catch(() => {});
 
     return true;
   }
 
-  private async syncPacketToUpstash(packet: EncryptedPacket): Promise<void> {
+  public async syncPacketToUpstash(packet: EncryptedPacket): Promise<void> {
     const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
     const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
     if (!url || !token) return;
@@ -244,12 +244,32 @@ class ServerStorage {
     try {
       const key = `lunaris:relay:${packet.recipientId}`;
       const serialized = JSON.stringify(packet);
-      await fetch(`${url}/rpush/${key}/${encodeURIComponent(serialized)}`, {
-        headers: { Authorization: `Bearer ${token}` },
+
+      // Use POST /pipeline with JSON body to prevent HTTP 414 URI Too Long errors
+      // on large SDP offer/answer packets (>3,000 characters)
+      const res = await fetch(`${url}/pipeline`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([
+          ['RPUSH', key, serialized],
+          ['EXPIRE', key, 600],
+        ]),
       });
-      await fetch(`${url}/expire/${key}/600`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+
+      if (!res.ok) {
+        // Fallback to direct single command POST if /pipeline is unavailable
+        await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(['RPUSH', key, serialized]),
+        });
+      }
     } catch (err) {
       console.warn('Upstash Redis sync error:', err);
     }

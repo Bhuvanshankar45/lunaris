@@ -53,7 +53,9 @@ const VideoTile: React.FC<{
 
   useEffect(() => {
     if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+      if (videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
+      }
       videoRef.current.play().catch(() => {});
     }
   }, [stream, trackCount]);
@@ -70,10 +72,10 @@ const VideoTile: React.FC<{
   }, [stream]);
 
   const hasVideo =
-    stream &&
+    !!stream &&
     !participant.isVideoOff &&
     stream.getVideoTracks().length > 0 &&
-    stream.getVideoTracks()[0].enabled;
+    stream.getVideoTracks().some((t) => t.enabled);
 
   return (
     <div
@@ -88,22 +90,22 @@ const VideoTile: React.FC<{
         ref={videoRef}
         autoPlay
         playsInline
-        muted={isSelf}
-        className={`w-full h-full object-cover ${isSelf ? 'transform -scale-x-100' : ''} ${
-          hasVideo ? 'block' : 'hidden'
-        }`}
+        muted={true}
+        className={`w-full h-full object-cover transition-opacity duration-200 ${
+          isSelf ? 'transform -scale-x-100' : ''
+        } ${hasVideo ? 'opacity-100' : 'opacity-0 absolute inset-0 pointer-events-none'}`}
       />
 
       {/* Fallback Avatar when camera is turned off */}
       {!hasVideo && (
-        <div className="flex flex-col items-center p-4">
+        <div className="flex flex-col items-center p-4 z-10">
           <Avatar name={participant.displayName} size="xl" />
           <p className="mt-3 font-semibold text-base text-[#F0EFEA]">
             {participant.displayName} {isSelf && '(You)'}
           </p>
           <span className="text-xs text-[#A9ABA8] font-mono">{participant.personalId}</span>
           <span className="mt-2 text-[11px] px-2.5 py-0.5 rounded-full bg-white/10 text-[#CBCCC7]">
-            {participant.isVideoOff ? 'Camera Off' : 'Waiting for Video...'}
+            {participant.isVideoOff ? 'Camera Off' : 'Connecting Video...'}
           </span>
         </div>
       )}
@@ -112,7 +114,7 @@ const VideoTile: React.FC<{
       {showPinButton && onPin && (
         <button
           onClick={onPin}
-          className="absolute top-3 right-3 p-2 rounded-xl bg-black/40 hover:bg-black/70 text-white backdrop-blur-xs opacity-0 hover:opacity-100 transition-opacity"
+          className="absolute top-3 right-3 p-2 rounded-xl bg-black/40 hover:bg-black/70 text-white backdrop-blur-xs opacity-0 hover:opacity-100 transition-opacity z-20"
           title="Pin to main spotlight"
         >
           <Pin className="w-3.5 h-3.5" />
@@ -120,7 +122,7 @@ const VideoTile: React.FC<{
       )}
 
       {/* Tile Bottom Info Badge */}
-      <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs">
+      <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs z-20">
         <span className="font-medium text-[#F0EFEA] truncate max-w-[140px]">
           {participant.displayName} {isSelf && '(You)'}
         </span>
@@ -158,8 +160,28 @@ export const CallView: React.FC<CallViewProps> = ({
   const [showSafetyModal, setShowSafetyModal] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [activeSpeakerIndex, setActiveSpeakerIndex] = useState(0);
+  const [audioAutoplayBlocked, setAudioAutoplayBlocked] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+
+  // Bind and continuously play incoming remote audio stream
+  useEffect(() => {
+    if (remoteAudioRef.current && remoteStream) {
+      remoteAudioRef.current.srcObject = remoteStream;
+      const playPromise = remoteAudioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setAudioAutoplayBlocked(false);
+          })
+          .catch((err) => {
+            console.warn('Audio playback prevented by browser policy, awaiting user gesture:', err);
+            setAudioAutoplayBlocked(true);
+          });
+      }
+    }
+  }, [remoteStream]);
 
   // Call duration counter
   useEffect(() => {
@@ -193,12 +215,44 @@ export const CallView: React.FC<CallViewProps> = ({
     setChatInput('');
   };
 
+  const handleEnableAudio = () => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.play().then(() => setAudioAutoplayBlocked(false)).catch(() => {});
+    }
+  };
+
   const pinnedParticipant = callState.participants.find(
     (p) => p.id === callState.pinnedParticipantId
   );
 
   return (
-    <div className="h-[calc(100vh-4rem)] flex flex-col bg-[#151614] text-[#F0EFEA] overflow-hidden relative select-none">
+    <div
+      onClick={audioAutoplayBlocked ? handleEnableAudio : undefined}
+      className="h-[calc(100vh-4rem)] flex flex-col bg-[#151614] text-[#F0EFEA] overflow-hidden relative select-none"
+    >
+      {/* Dedicated Invisible Audio Element for Pristine Remote Audio */}
+      <audio
+        ref={remoteAudioRef}
+        autoPlay
+        playsInline
+        aria-hidden="true"
+        className="sr-only pointer-events-none"
+      />
+
+      {/* Autoplay Blocked Floating Banner for Mobile / Strict Browsers */}
+      {audioAutoplayBlocked && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-2xl bg-[#E28888] text-black font-semibold text-xs flex items-center gap-3 shadow-2xl backdrop-blur-md animate-pulse">
+          <Volume2 className="w-4 h-4 shrink-0" />
+          <span>Browser muted incoming audio. Tap anywhere or click enable:</span>
+          <button
+            onClick={handleEnableAudio}
+            className="px-2.5 py-1 rounded-lg bg-black text-white text-[11px] font-bold hover:bg-neutral-800 transition-colors"
+          >
+            Unmute Audio
+          </button>
+        </div>
+      )}
+
       {/* Top Overlay Bar: Room Title, E2EE Shield, Timer */}
       <header className="h-14 px-4 sm:px-6 bg-black/40 backdrop-blur-md border-b border-white/10 flex items-center justify-between z-20 shrink-0">
         <div className="flex items-center gap-3">

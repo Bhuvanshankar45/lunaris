@@ -377,7 +377,7 @@ export default function LunarisSanctuaryApp() {
       currentScreen === 'active-call' ||
       currentScreen === 'call-lobby'
     );
-    const intervalTime = isCallActive ? 800 : 2500;
+    const intervalTime = isCallActive ? 500 : 2500;
     const interval = setInterval(() => {
       pollRelayPackets();
     }, intervalTime);
@@ -790,8 +790,8 @@ export default function LunarisSanctuaryApp() {
       } catch (err: any) {
         console.warn('Failed to start local media:', err);
       }
-    } else {
-      (webrtc as any).localStream = activeStream;
+    } else if (activeStream) {
+      webrtc.setLocalStream(activeStream);
     }
     setLocalStream(activeStream || null);
 

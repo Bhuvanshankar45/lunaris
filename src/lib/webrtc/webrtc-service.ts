@@ -4,16 +4,58 @@
  * Zero server media inspection: video and audio frames flow directly between devices.
  */
 
-export const GOOGLE_STUN_SERVERS: RTCConfiguration = {
-  iceServers: [
+export const getIceConfiguration = (): RTCConfiguration => {
+  const customTurnUrl = process.env.NEXT_PUBLIC_TURN_SERVER_URL;
+  const customTurnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
+  const customTurnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+
+  const iceServers: RTCIceServer[] = [
+    // Google Public STUN Servers
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun4.l.google.com:19302' },
-  ],
-  iceCandidatePoolSize: 10,
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+
+  if (customTurnUrl) {
+    iceServers.push({
+      urls: customTurnUrl,
+      username: customTurnUsername,
+      credential: customTurnCredential,
+    });
+  } else {
+    // OpenRelay Public TURN Relay by Metered (High-performance global TURN for symmetric NAT & mobile cellular traversal)
+    iceServers.push(
+      {
+        urls: 'stun:openrelay.metered.ca:80',
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelay',
+        credential: 'openrelay',
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelay',
+        credential: 'openrelay',
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelay',
+        credential: 'openrelay',
+      }
+    );
+  }
+
+  return {
+    iceServers,
+    iceCandidatePoolSize: 10,
+  };
 };
+
+export const GOOGLE_STUN_SERVERS: RTCConfiguration = getIceConfiguration();
 
 export interface WebRTCCallbackHandlers {
   onLocalStream?: (stream: MediaStream) => void;
@@ -76,6 +118,27 @@ export class WebRTCService {
   }
 
   /**
+   * Explicitly set or update the local media stream and bind to peer connection
+   */
+  public setLocalStream(stream: MediaStream): void {
+    this.localStream = stream;
+    if (this.peerConnection) {
+      const senders = this.peerConnection.getSenders();
+      stream.getTracks().forEach((track) => {
+        const existingSender = senders.find((s) => s.track?.kind === track.kind);
+        if (existingSender) {
+          existingSender.replaceTrack(track).catch(() => {});
+        } else {
+          this.peerConnection!.addTrack(track, stream);
+        }
+      });
+    }
+    if (this.handlers.onLocalStream) {
+      this.handlers.onLocalStream(stream);
+    }
+  }
+
+  /**
    * Initialize RTCPeerConnection and bind event listeners
    */
   private initPeerConnection(): RTCPeerConnection {
@@ -83,12 +146,13 @@ export class WebRTCService {
       return this.peerConnection;
     }
 
-    const pc = new RTCPeerConnection(GOOGLE_STUN_SERVERS);
+    const config = getIceConfiguration();
+    const pc = new RTCPeerConnection(config);
     this.peerConnection = pc;
 
     this.remoteStream = new MediaStream();
     if (this.handlers.onRemoteStream) {
-      this.handlers.onRemoteStream(this.remoteStream);
+      this.handlers.onRemoteStream(new MediaStream());
     }
 
     // Attach local stream tracks to WebRTC peer connection
@@ -100,19 +164,41 @@ export class WebRTCService {
 
     // Listen for incoming remote tracks from peer
     pc.ontrack = (event) => {
-      let streamToReport = this.remoteStream;
-      if (event.streams && event.streams[0]) {
-        this.remoteStream = event.streams[0];
-        streamToReport = event.streams[0];
-      } else if (event.track) {
-        if (!this.remoteStream) {
-          this.remoteStream = new MediaStream();
-        }
-        this.remoteStream.addTrack(event.track);
-        streamToReport = new MediaStream(this.remoteStream.getTracks());
+      if (!this.remoteStream) {
+        this.remoteStream = new MediaStream();
       }
-      if (this.handlers.onRemoteStream && streamToReport) {
-        this.handlers.onRemoteStream(streamToReport);
+
+      if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach((track) => {
+          if (!this.remoteStream!.getTracks().some((t) => t.id === track.id)) {
+            this.remoteStream!.addTrack(track);
+          }
+        });
+      } else if (event.track) {
+        if (!this.remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+          this.remoteStream.addTrack(event.track);
+        }
+      }
+
+      // Re-emit on track mute/unmute so UI stays in lockstep
+      if (event.track) {
+        event.track.onmute = () => {
+          if (this.handlers.onRemoteStream && this.remoteStream) {
+            this.handlers.onRemoteStream(new MediaStream(this.remoteStream.getTracks()));
+          }
+        };
+        event.track.onunmute = () => {
+          if (this.handlers.onRemoteStream && this.remoteStream) {
+            this.handlers.onRemoteStream(new MediaStream(this.remoteStream.getTracks()));
+          }
+        };
+      }
+
+      // CRITICAL: Always construct a fresh MediaStream instance wrapper
+      // so React state triggers an immediate re-render and video/audio mount
+      const freshStream = new MediaStream(this.remoteStream.getTracks());
+      if (this.handlers.onRemoteStream) {
+        this.handlers.onRemoteStream(freshStream);
       }
     };
 
@@ -128,13 +214,16 @@ export class WebRTCService {
 
     // Connection state monitoring
     pc.onconnectionstatechange = () => {
+      console.log('[WebRTC] Connection state changed:', pc.connectionState);
       if (this.handlers.onConnectionState) {
         this.handlers.onConnectionState(pc.connectionState);
       }
     };
 
     pc.oniceconnectionstatechange = () => {
+      console.log('[WebRTC] ICE Connection state:', pc.iceConnectionState);
       if (pc.iceConnectionState === 'failed') {
+        console.warn('[WebRTC] ICE failed, attempting ICE restart...');
         pc.restartIce();
       }
     };
@@ -170,7 +259,7 @@ export class WebRTCService {
     // Flush any ICE candidates that arrived before the offer was set
     while (this.pendingCandidates.length > 0) {
       const candidate = this.pendingCandidates.shift();
-      if (candidate) {
+      if (candidate && candidate.candidate) {
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (e) {
@@ -194,7 +283,7 @@ export class WebRTCService {
 
     while (this.pendingCandidates.length > 0) {
       const candidate = this.pendingCandidates.shift();
-      if (candidate) {
+      if (candidate && candidate.candidate) {
         try {
           await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (e) {
@@ -208,6 +297,7 @@ export class WebRTCService {
    * Handle incoming ICE Candidate from peer
    */
   public async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+    if (!candidate || !candidate.candidate) return;
     if (this.peerConnection && this.peerConnection.remoteDescription) {
       try {
         await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));

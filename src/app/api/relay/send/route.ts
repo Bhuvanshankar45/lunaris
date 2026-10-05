@@ -31,6 +31,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Failed to enqueue relay packet.' }, { status: 500 });
     }
 
+    // Await cloud store sync for durable cross-worker serverless delivery
+    await serverStorage.syncPacketToUpstash(packet);
+
     return NextResponse.json({
       success: true,
       packetId: packet.packetId,
