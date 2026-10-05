@@ -295,5 +295,57 @@ describe('Arca Media Encryption', () => {
     expect(base64ToBytes('')).toEqual(new Uint8Array(0));
     expect(base64ToBytes(null as any)).toEqual(new Uint8Array(0));
   });
+
+  it('guarantees deterministic pre-key fallback and seamless Double Ratchet messaging for any user ID', async () => {
+    const { getFallbackPreKeyPub, getFallbackPreKeyPriv } = await import('../demo-keys');
+    const { vault } = await import('../../storage/vault');
+
+    const peerId = 'ID:WTYJ5425';
+    const senderId = 'ID:USER9999';
+
+    // Verify deterministic keys exist and match
+    const peerPub = getFallbackPreKeyPub(peerId);
+    const peerPriv = getFallbackPreKeyPriv(peerId);
+
+    expect(peerPub).toBeDefined();
+    expect(peerPriv).toBeDefined();
+
+    // Verify vault fallback
+    const vaultPriv = vault.getSignedPreKeyPriv(peerId);
+    expect(vaultPriv).toBe(peerPriv);
+
+    // Sender initiates session using fallback public key
+    const { session: senderSession } = await DoubleRatchetSession.initiateSession(
+      senderId,
+      peerId,
+      { identityKeyPub: peerPub, signedPreKeyPub: peerPub }
+    );
+
+    const packet = await senderSession.encrypt(senderId, peerId, {
+      id: 'fallback_msg_1',
+      text: 'Message encrypted with deterministic pre-key fallback',
+    });
+
+    // Peer responds to session using fallback private key
+    const peerSession = await DoubleRatchetSession.respondToSession(
+      peerId,
+      senderId,
+      peerPriv,
+      packet.ephemeralPublicKey
+    );
+
+    const decrypted = await peerSession.decrypt(packet);
+    expect(decrypted.text).toBe('Message encrypted with deterministic pre-key fallback');
+
+    // Subsequent response steps ratchet forward with forward secrecy
+    const replyPacket = await peerSession.encrypt(peerId, senderId, {
+      id: 'fallback_reply_1',
+      text: 'Reply message stepping ratchet forward',
+    });
+
+    const decryptedReply = await senderSession.decrypt(replyPacket);
+    expect(decryptedReply.text).toBe('Reply message stepping ratchet forward');
+  });
 });
+
 

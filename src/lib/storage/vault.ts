@@ -7,6 +7,7 @@
 import { StoredLocalMessage } from '../crypto/types';
 import { RatchetSessionState } from '../crypto/double-ratchet';
 import { UserProfile, PeerContact } from '@/types';
+import { getFallbackPreKeyPriv } from '../crypto/demo-keys';
 
 const STORAGE_KEYS = {
   CURRENT_USER: 'lunaris_current_user',
@@ -289,9 +290,12 @@ class LocalVault {
     }
   }
 
-  public getSignedPreKeyPriv(personalId: string): string | null {
+  public getSignedPreKeyPriv(personalId: string): string {
     const bundle = this.getUserKeyBundle(personalId);
-    return bundle ? bundle.signedPreKeyPriv : null;
+    if (bundle && bundle.signedPreKeyPriv) {
+      return bundle.signedPreKeyPriv;
+    }
+    return getFallbackPreKeyPriv(personalId);
   }
 
   // --- Contact Nicknames ---

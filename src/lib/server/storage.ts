@@ -5,6 +5,8 @@
  */
 
 import { EncryptedPacket } from '../crypto/types';
+import fs from 'fs';
+import path from 'path';
 
 export interface ServerUser {
   id: string;
@@ -61,10 +63,67 @@ class ServerStorage {
   private ephemeralRelayQueue: EncryptedPacket[] = [];
   private abuseReports: AbuseReportRecord[] = [];
 
-  constructor() {
-    if (process.env.NODE_ENV === 'test') {
-      this.seedDemoUsers();
+  private getStorageFilePath(): string | null {
+    try {
+      const dataDir = path.join(process.cwd(), '.data');
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      return path.join(dataDir, 'lunaris-store.json');
+    } catch {
+      return null;
     }
+  }
+
+  private loadFromDisk(): void {
+    const filePath = this.getStorageFilePath();
+    if (!filePath || !fs.existsSync(filePath)) return;
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      if (!raw || !raw.trim()) return;
+      const data = JSON.parse(raw);
+      if (Array.isArray(data.users)) {
+        for (const u of data.users) {
+          this.users.set(u.personalId, u);
+          this.emailMap.set(u.emailHash, u.personalId);
+        }
+      }
+      if (Array.isArray(data.connections)) {
+        for (const c of data.connections) {
+          const key = this.getConnectionKey(c.userIdA, c.userIdB);
+          this.connections.set(key, c);
+        }
+      }
+    } catch {
+      // In multi-worker Next.js environments, ignore concurrent read contention
+    }
+  }
+
+  private saveToDisk(): void {
+    const filePath = this.getStorageFilePath();
+    if (!filePath) return;
+    try {
+      const data = {
+        users: Array.from(this.users.values()),
+        connections: Array.from(this.connections.values()),
+      };
+      const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).substring(2, 6)}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch {
+        // Fallback for Windows cross-process locks
+        fs.copyFileSync(tmpPath, filePath);
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
+    } catch {
+      // Silently handle concurrent write conflicts
+    }
+  }
+
+  constructor() {
+    this.seedDemoUsers();
+    this.loadFromDisk();
     // Periodic ephemeral packet expiration sweep (every 30 seconds)
     if (typeof setInterval !== 'undefined') {
       setInterval(() => this.purgeExpiredRelayPackets(), 30000);
@@ -130,6 +189,7 @@ class ServerStorage {
   public registerUser(user: ServerUser): void {
     this.users.set(user.personalId, user);
     this.emailMap.set(user.emailHash, user.personalId);
+    this.saveToDisk();
     this.syncUserToUpstash(user).catch(() => {});
   }
 
@@ -148,6 +208,7 @@ class ServerStorage {
       if (displayName) user.displayName = displayName;
       if (avatarId) user.avatarId = avatarId;
       if (bio !== undefined) user.bio = bio;
+      this.saveToDisk();
       this.syncUserToUpstash(user).catch(() => {});
     } else if (identityKeyPub && signedPreKeyPub) {
       // Auto-register/restore user profile in server storage
@@ -180,6 +241,7 @@ class ServerStorage {
           if (signedPreKeyPub) { conn.targetSignedPreKeyPub = signedPreKeyPub; changed = true; }
         }
         if (changed) {
+          this.saveToDisk();
           this.syncConnectionToUpstash(conn);
         }
       }
@@ -213,7 +275,11 @@ class ServerStorage {
   }
 
   public async getUserByPersonalIdAsync(personalId: string): Promise<ServerUser | undefined> {
-    const local = this.users.get(personalId);
+    let local = this.users.get(personalId);
+    if (!local) {
+      this.loadFromDisk();
+      local = this.users.get(personalId);
+    }
     if (local) return local;
 
     const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
@@ -283,6 +349,7 @@ class ServerStorage {
       this.ephemeralRelayQueue = this.ephemeralRelayQueue.filter(
         (p) => p.recipientId !== personalId && p.senderId !== personalId
       );
+      this.saveToDisk();
     }
   }
 
@@ -340,6 +407,7 @@ class ServerStorage {
       if (targetMeta?.bio) existing.targetBio = targetMeta.bio;
       if (targetMeta?.identityKeyPub) existing.targetIdentityKeyPub = targetMeta.identityKeyPub;
       if (targetMeta?.signedPreKeyPub) existing.targetSignedPreKeyPub = targetMeta.signedPreKeyPub;
+      this.saveToDisk();
       this.syncConnectionToUpstash(existing);
       return existing;
     }
@@ -364,6 +432,7 @@ class ServerStorage {
       updatedAt: Date.now(),
     };
     this.connections.set(key, conn);
+    this.saveToDisk();
     this.syncConnectionToUpstash(conn);
     return conn;
   }
@@ -378,6 +447,7 @@ class ServerStorage {
     if (conn) {
       conn.status = status;
       conn.updatedAt = Date.now();
+      this.saveToDisk();
       this.syncConnectionToUpstash(conn);
     }
     return conn;
@@ -386,6 +456,7 @@ class ServerStorage {
   public removeConnection(idA: string, idB: string): boolean {
     const key = this.getConnectionKey(idA, idB);
     const deleted = this.connections.delete(key);
+    this.saveToDisk();
     const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
     const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
     if (url && token) {
@@ -406,7 +477,11 @@ class ServerStorage {
   }
 
   public getConnectionAsync(idA: string, idB: string): Promise<ConnectionRecord | undefined> {
-    const local = this.getConnection(idA, idB);
+    let local = this.getConnection(idA, idB);
+    if (!local) {
+      this.loadFromDisk();
+      local = this.getConnection(idA, idB);
+    }
     if (local) return Promise.resolve(local);
 
     const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;

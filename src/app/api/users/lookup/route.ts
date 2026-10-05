@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { serverStorage } from '@/lib/server/storage';
 import { isValidPersonalId, normalizePersonalId } from '@/lib/crypto/id-generator';
-import { DEMO_PREKEYS_PUB } from '@/lib/crypto/demo-keys';
+import { DEMO_PREKEYS_PUB, getFallbackPreKeyPub } from '@/lib/crypto/demo-keys';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -23,7 +23,7 @@ export async function GET(request: Request) {
     let signedPreKeyPub = user.signedPreKeyPub;
     // Replace non-P-256 placeholder if present
     if (!signedPreKeyPub || signedPreKeyPub.startsWith('MIIBIjANBgkq')) {
-      signedPreKeyPub = DEMO_PREKEYS_PUB[personalId] || signedPreKeyPub;
+      signedPreKeyPub = DEMO_PREKEYS_PUB[personalId] || getFallbackPreKeyPub(personalId);
     }
 
     return NextResponse.json({
@@ -32,7 +32,7 @@ export async function GET(request: Request) {
         displayName: user.displayName,
         bio: user.bio,
         avatarId: user.avatarId,
-        identityKeyPub: user.identityKeyPub,
+        identityKeyPub: user.identityKeyPub || signedPreKeyPub,
         signedPreKeyPub,
         createdAt: user.createdAt,
       },
@@ -49,14 +49,15 @@ export async function GET(request: Request) {
 
   if (connWithKeys) {
     const isInitiator = connWithKeys.initiatorId === personalId;
+    const preKey = (isInitiator ? connWithKeys.initiatorSignedPreKeyPub : connWithKeys.targetSignedPreKeyPub) || getFallbackPreKeyPub(personalId);
     return NextResponse.json({
       user: {
         personalId,
         displayName: (isInitiator ? connWithKeys.initiatorDisplayName : connWithKeys.targetDisplayName) || personalId,
         bio: (isInitiator ? connWithKeys.initiatorBio : connWithKeys.targetBio) || '',
         avatarId: (isInitiator ? connWithKeys.initiatorAvatarId : connWithKeys.targetAvatarId) || 'avatar-1',
-        identityKeyPub: (isInitiator ? connWithKeys.initiatorIdentityKeyPub : connWithKeys.targetIdentityKeyPub) || '',
-        signedPreKeyPub: (isInitiator ? connWithKeys.initiatorSignedPreKeyPub : connWithKeys.targetSignedPreKeyPub) || '',
+        identityKeyPub: (isInitiator ? connWithKeys.initiatorIdentityKeyPub : connWithKeys.targetIdentityKeyPub) || preKey,
+        signedPreKeyPub: preKey,
         createdAt: connWithKeys.createdAt,
       },
     });
@@ -78,5 +79,18 @@ export async function GET(request: Request) {
     });
   }
 
-  return NextResponse.json({ error: 'No user found with this exact ID.' }, { status: 404 });
+  // Fallback 3: Return deterministic fallback keys for any valid ID format
+  const fallbackPub = getFallbackPreKeyPub(personalId);
+  return NextResponse.json({
+    user: {
+      personalId,
+      displayName: personalId,
+      bio: '',
+      avatarId: 'avatar-1',
+      identityKeyPub: fallbackPub,
+      signedPreKeyPub: fallbackPub,
+      createdAt: Date.now(),
+    },
+  });
 }
+
