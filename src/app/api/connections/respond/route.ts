@@ -4,7 +4,7 @@ import { serverStorage } from '@/lib/server/storage';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { currentUserId, targetUserId, action } = body; // action: 'accept' | 'reject' | 'block'
+    const { currentUserId, targetUserId, action, acceptorDisplayName, acceptorAvatarId, acceptorBio, acceptorIdentityKeyPub, acceptorSignedPreKeyPub } = body;
 
     if (!currentUserId || !targetUserId || !action) {
       return NextResponse.json({ error: 'Missing parameters.' }, { status: 400 });
@@ -20,6 +20,11 @@ export async function POST(request: Request) {
     }
 
     if (action === 'accept') {
+      if (acceptorDisplayName) conn.targetDisplayName = acceptorDisplayName;
+      if (acceptorAvatarId) conn.targetAvatarId = acceptorAvatarId;
+      if (acceptorBio) conn.targetBio = acceptorBio;
+      if (acceptorIdentityKeyPub) conn.targetIdentityKeyPub = acceptorIdentityKeyPub;
+      if (acceptorSignedPreKeyPub) conn.targetSignedPreKeyPub = acceptorSignedPreKeyPub;
       const updated = serverStorage.updateConnectionStatus(currentUserId, targetUserId, 'accepted');
       return NextResponse.json({ success: true, status: 'accepted', connection: updated });
     }

@@ -19,7 +19,7 @@ import { AppScreen, CallMode, PeerContact, UserProfile, ActiveCallState } from '
 import { StoredLocalMessage, EncryptedPacket } from '@/lib/crypto/types';
 import { vault, DEFAULT_SETTINGS, UserSettings } from '@/lib/storage/vault';
 import { DoubleRatchetSession } from '@/lib/crypto/double-ratchet';
-import { deriveSafetyNumber } from '@/lib/crypto/primitives';
+import { deriveSafetyNumber, generateECDHKeyPair, exportPrivateKey } from '@/lib/crypto/primitives';
 import { encryptFileForRelay, decryptFileFromRelay } from '@/lib/crypto/file-encryption';
 import { DEMO_PREKEYS_PRIV } from '@/lib/crypto/demo-keys';
 import { WifiOff, Radio, Phone, PhoneOff, Video, VideoOff } from 'lucide-react';
@@ -156,6 +156,25 @@ export default function LunarisSanctuaryApp() {
     // Restore real authenticated session from client vault, if present
     const savedUser = vault.getCurrentUser();
     if (savedUser) {
+      // Ensure local device private keys exist for this user in vault so packets can be decrypted
+      const keyBundle = vault.getUserKeyBundle(savedUser.personalId);
+      if (!keyBundle || !keyBundle.signedPreKeyPriv) {
+        (async () => {
+          try {
+            const idKp = await generateECDHKeyPair();
+            const spKp = await generateECDHKeyPair();
+            const idPriv = await exportPrivateKey(idKp.privateKey);
+            const spPriv = await exportPrivateKey(spKp.privateKey);
+            vault.saveUserKeyBundle(savedUser.personalId, {
+              identityKeyPriv: idPriv,
+              signedPreKeyPriv: spPriv,
+            });
+          } catch (e) {
+            console.warn('Could not auto-generate missing key bundle on startup:', e);
+          }
+        })();
+      }
+
       setCurrentUser(savedUser);
       // Pre-populate with locally stored friends instantly
       const localFriends = vault.getAcceptedFriends();
@@ -310,16 +329,45 @@ export default function LunarisSanctuaryApp() {
                             peer: {
                               personalId: payload.sender.personalId,
                               displayName: payload.sender.displayName || payload.sender.personalId,
-                              bio: '',
+                              bio: payload.sender.bio || '',
                               avatarId: payload.sender.avatarId || 'avatar-1',
-                              identityKeyPub: '',
-                              signedPreKeyPub: '',
+                              identityKeyPub: payload.sender.identityKeyPub || '',
+                              signedPreKeyPub: payload.sender.signedPreKeyPub || '',
                               createdAt: Date.now(),
                             },
                             createdAt: Date.now(),
                           },
                           ...prev,
                         ];
+                      });
+                    }
+                    continue;
+                  }
+                  if (payload.callAction === 'connection_accepted') {
+                    fetchConnections(currentUser.personalId);
+                    if (payload.sender) {
+                      const acceptedFriend = {
+                        connectionId: `conn_${Date.now()}`,
+                        peer: {
+                          personalId: payload.sender.personalId,
+                          displayName: payload.sender.displayName || payload.sender.personalId,
+                          bio: payload.sender.bio || '',
+                          avatarId: payload.sender.avatarId || 'avatar-1',
+                          identityKeyPub: payload.sender.identityKeyPub || '',
+                          signedPreKeyPub: payload.sender.signedPreKeyPub || '',
+                          createdAt: Date.now(),
+                        },
+                        updatedAt: Date.now(),
+                      };
+                      vault.addAcceptedFriend(acceptedFriend);
+                      setAcceptedConnections((prev) => {
+                        const existingIdx = prev.findIndex((c) => c.peer.personalId === payload.sender.personalId);
+                        if (existingIdx >= 0) {
+                          const updated = [...prev];
+                          updated[existingIdx] = acceptedFriend;
+                          return updated;
+                        }
+                        return [acceptedFriend, ...prev];
                       });
                     }
                     continue;
@@ -337,37 +385,64 @@ export default function LunarisSanctuaryApp() {
             if (!session) {
               const saved = vault.getSession(packet.senderId);
               if (saved) {
-                session = new DoubleRatchetSession(saved);
+                try {
+                  session = new DoubleRatchetSession(saved);
+                  ratchetSessionsRef.current.set(packet.senderId, session);
+                } catch {
+                  session = undefined;
+                }
+              }
+            }
+
+            const privKey =
+              vault.getSignedPreKeyPriv(currentUser.personalId) ||
+              DEMO_PREKEYS_PRIV[currentUser.personalId];
+
+            if (!session && privKey && packet.ephemeralPublicKey) {
+              try {
+                session = await DoubleRatchetSession.respondToSession(
+                  currentUser.personalId,
+                  packet.senderId,
+                  privKey,
+                  packet.ephemeralPublicKey
+                );
                 ratchetSessionsRef.current.set(packet.senderId, session);
-              } else {
-                const privKey =
-                  vault.getSignedPreKeyPriv(currentUser.personalId) ||
-                  DEMO_PREKEYS_PRIV[currentUser.personalId];
+                vault.saveSession(packet.senderId, session.getState());
+              } catch (initErr) {
+                console.warn('Responder session init error:', initErr);
+              }
+            }
+
+            if (session) {
+              let plaintext: any;
+              try {
+                plaintext = await session.decrypt(packet);
+                vault.saveSession(packet.senderId, session.getState());
+              } catch (decErr) {
+                console.warn('Could not decrypt packet with active session, attempting responder re-sync:', decErr);
+                // Self-healing fallback: If existing session was out of sync (e.g. premature initiateSession or re-sent key)
                 if (privKey && packet.ephemeralPublicKey) {
                   try {
-                    session = await DoubleRatchetSession.respondToSession(
+                    const freshSession = await DoubleRatchetSession.respondToSession(
                       currentUser.personalId,
                       packet.senderId,
                       privKey,
                       packet.ephemeralPublicKey
                     );
+                    plaintext = await freshSession.decrypt(packet);
+                    session = freshSession;
                     ratchetSessionsRef.current.set(packet.senderId, session);
                     vault.saveSession(packet.senderId, session.getState());
-                  } catch (initErr) {
-                    console.warn('Responder session init error:', initErr);
+                  } catch (freshDecErr) {
+                    console.warn('Responder re-sync decryption also failed:', freshDecErr);
                   }
                 }
               }
-            }
 
-            if (session) {
-              try {
-                const plaintext = await session.decrypt(packet);
-                vault.saveSession(packet.senderId, session.getState());
-
+              if (plaintext) {
                 // If this is an in-band call action
-                if (plaintext && (plaintext as any).callAction) {
-                  handleIncomingCallSignal(packet.senderId, plaintext as any);
+                if (plaintext.callAction) {
+                  handleIncomingCallSignal(packet.senderId, plaintext);
                   continue;
                 }
 
@@ -411,8 +486,6 @@ export default function LunarisSanctuaryApp() {
                 if (activePeer && activePeer.personalId === packet.senderId) {
                   setMessages(vault.getMessagesForChat(packet.senderId));
                 }
-              } catch (decErr) {
-                console.warn('Could not decrypt packet:', decErr);
               }
             }
           }
@@ -476,42 +549,14 @@ export default function LunarisSanctuaryApp() {
       setIsSafetyVerified(vault.isSafetyNumberVerified(peer.personalId));
     }
 
-    // Ensure Double Ratchet session is initialized
-    try {
-      if (!ratchetSessionsRef.current.has(peer.personalId)) {
-        const savedSession = vault.getSession(peer.personalId);
-        if (savedSession) {
-          ratchetSessionsRef.current.set(peer.personalId, new DoubleRatchetSession(savedSession));
-        } else if (currentUser) {
-          const { session } = await DoubleRatchetSession.initiateSession(
-            currentUser.personalId,
-            peer.personalId,
-            {
-              identityKeyPub: peer.identityKeyPub,
-              signedPreKeyPub: peer.signedPreKeyPub,
-            }
-          );
-          ratchetSessionsRef.current.set(peer.personalId, session);
-          vault.saveSession(peer.personalId, session.getState());
-        }
-      }
-    } catch (err) {
-      console.warn('Session restore failed, re-initiating:', err);
-      vault.deleteSession(peer.personalId);
-      if (currentUser) {
+    // Restore existing Double Ratchet session from local vault if present
+    if (!ratchetSessionsRef.current.has(peer.personalId)) {
+      const savedSession = vault.getSession(peer.personalId);
+      if (savedSession) {
         try {
-          const { session } = await DoubleRatchetSession.initiateSession(
-            currentUser.personalId,
-            peer.personalId,
-            {
-              identityKeyPub: peer.identityKeyPub,
-              signedPreKeyPub: peer.signedPreKeyPub,
-            }
-          );
-          ratchetSessionsRef.current.set(peer.personalId, session);
-          vault.saveSession(peer.personalId, session.getState());
-        } catch (e2) {
-          console.warn('Re-initiation failed:', e2);
+          ratchetSessionsRef.current.set(peer.personalId, new DoubleRatchetSession(savedSession));
+        } catch (err) {
+          console.warn('Could not restore saved ratchet session:', err);
         }
       }
     }
@@ -520,6 +565,38 @@ export default function LunarisSanctuaryApp() {
   // Send an encrypted message
   const handleSendMessage = async (text: string, replyToId?: string) => {
     if (!currentUser || !activePeer) return;
+
+    // Ensure we have activePeer's public keys for Double Ratchet
+    let peerSignedPreKeyPub = activePeer.signedPreKeyPub;
+    let peerIdentityKeyPub = activePeer.identityKeyPub;
+
+    if (!peerSignedPreKeyPub || !peerIdentityKeyPub) {
+      try {
+        const lookupRes = await fetch(`/api/users/lookup?id=${encodeURIComponent(activePeer.personalId)}`);
+        if (lookupRes.ok) {
+          const lookupData = await lookupRes.json();
+          if (lookupData.user) {
+            peerSignedPreKeyPub = lookupData.user.signedPreKeyPub || peerSignedPreKeyPub;
+            peerIdentityKeyPub = lookupData.user.identityKeyPub || peerIdentityKeyPub;
+            setActivePeer((prev) => (prev ? {
+              ...prev,
+              signedPreKeyPub: peerSignedPreKeyPub,
+              identityKeyPub: peerIdentityKeyPub,
+            } : null));
+            vault.updateAcceptedFriend(activePeer.personalId, (f) => ({
+              ...f,
+              peer: {
+                ...f.peer,
+                signedPreKeyPub: peerSignedPreKeyPub,
+                identityKeyPub: peerIdentityKeyPub,
+              },
+            }));
+          }
+        }
+      } catch (lookupErr) {
+        console.warn('Failed to lookup peer keys:', lookupErr);
+      }
+    }
 
     let session = ratchetSessionsRef.current.get(activePeer.personalId);
     if (!session) {
@@ -535,19 +612,25 @@ export default function LunarisSanctuaryApp() {
     }
 
     if (!session) {
+      if (!peerSignedPreKeyPub) {
+        alert('Cannot send message: peer cryptographic pre-key is not yet available. Please ask peer to reconnect.');
+        return;
+      }
       try {
         const { session: newSession } = await DoubleRatchetSession.initiateSession(
           currentUser.personalId,
           activePeer.personalId,
           {
-            identityKeyPub: activePeer.identityKeyPub,
-            signedPreKeyPub: activePeer.signedPreKeyPub,
+            identityKeyPub: peerIdentityKeyPub,
+            signedPreKeyPub: peerSignedPreKeyPub,
           }
         );
         session = newSession;
         ratchetSessionsRef.current.set(activePeer.personalId, session);
       } catch (initErr) {
         console.warn('Session initiation warning in handleSendMessage:', initErr);
+        alert('Failed to establish encrypted session: ' + ((initErr as any)?.message || 'Key error'));
+        return;
       }
     }
 
@@ -572,31 +655,39 @@ export default function LunarisSanctuaryApp() {
       }
     } catch (encErr) {
       console.warn('Encryption failed on current session, refreshing session:', encErr);
-      try {
-        const { session: freshSession } = await DoubleRatchetSession.initiateSession(
-          currentUser.personalId,
-          activePeer.personalId,
-          {
-            identityKeyPub: activePeer.identityKeyPub,
-            signedPreKeyPub: activePeer.signedPreKeyPub,
-          }
-        );
-        session = freshSession;
-        ratchetSessionsRef.current.set(activePeer.personalId, session);
-        encryptedPacket = await session.encrypt(
-          currentUser.personalId,
-          activePeer.personalId,
-          plaintextPayload,
-          'message',
-          settings.disappearingTimerSeconds || undefined
-        );
-      } catch (freshErr) {
-        console.warn('Fallback session encryption error:', freshErr);
+      if (peerSignedPreKeyPub) {
+        try {
+          const { session: freshSession } = await DoubleRatchetSession.initiateSession(
+            currentUser.personalId,
+            activePeer.personalId,
+            {
+              identityKeyPub: peerIdentityKeyPub,
+              signedPreKeyPub: peerSignedPreKeyPub,
+            }
+          );
+          session = freshSession;
+          ratchetSessionsRef.current.set(activePeer.personalId, session);
+          encryptedPacket = await session.encrypt(
+            currentUser.personalId,
+            activePeer.personalId,
+            plaintextPayload,
+            'message',
+            settings.disappearingTimerSeconds || undefined
+          );
+        } catch (freshErr) {
+          console.warn('Fallback session encryption error:', freshErr);
+        }
       }
     }
 
     if (session) {
       vault.saveSession(activePeer.personalId, session.getState());
+    }
+
+    if (!encryptedPacket) {
+      console.error('Failed to encrypt packet, aborting send');
+      alert('Encryption failed. Message was not sent.');
+      return;
     }
 
     // Save locally
@@ -618,16 +709,23 @@ export default function LunarisSanctuaryApp() {
 
     // Send packet to ephemeral relay
     try {
-      await fetch('/api/relay/send', {
+      const sendRes = await fetch('/api/relay/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(encryptedPacket),
       });
-      // Mark as delivered
-      vault.updateMessage(activePeer.personalId, msgId, (m) => ({ ...m, status: 'delivered' }));
+      if (sendRes.ok) {
+        vault.updateMessage(activePeer.personalId, msgId, (m) => ({ ...m, status: 'delivered' }));
+      } else {
+        const errJson = await sendRes.json().catch(() => ({}));
+        console.warn('Relay rejected packet:', errJson);
+        vault.updateMessage(activePeer.personalId, msgId, (m) => ({ ...m, status: 'sent' }));
+      }
       setMessages(vault.getMessagesForChat(activePeer.personalId));
     } catch (err) {
       console.warn('Relay failed:', err);
+      vault.updateMessage(activePeer.personalId, msgId, (m) => ({ ...m, status: 'sent' }));
+      setMessages(vault.getMessagesForChat(activePeer.personalId));
     }
   };
 
@@ -639,15 +737,46 @@ export default function LunarisSanctuaryApp() {
       // 1. Client-side media encryption
       const encryptedPkg = await encryptFileForRelay(file);
 
+      // Ensure we have activePeer's public keys
+      let peerSignedPreKeyPub = activePeer.signedPreKeyPub;
+      let peerIdentityKeyPub = activePeer.identityKeyPub;
+
+      if (!peerSignedPreKeyPub || !peerIdentityKeyPub) {
+        try {
+          const lookupRes = await fetch(`/api/users/lookup?id=${encodeURIComponent(activePeer.personalId)}`);
+          if (lookupRes.ok) {
+            const lookupData = await lookupRes.json();
+            if (lookupData.user) {
+              peerSignedPreKeyPub = lookupData.user.signedPreKeyPub || peerSignedPreKeyPub;
+              peerIdentityKeyPub = lookupData.user.identityKeyPub || peerIdentityKeyPub;
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       let session = ratchetSessionsRef.current.get(activePeer.personalId);
       if (!session) {
+        const saved = vault.getSession(activePeer.personalId);
+        if (saved) {
+          try {
+            session = new DoubleRatchetSession(saved);
+            ratchetSessionsRef.current.set(activePeer.personalId, session);
+          } catch {
+            session = undefined;
+          }
+        }
+      }
+
+      if (!session && peerSignedPreKeyPub) {
         try {
           const { session: newSession } = await DoubleRatchetSession.initiateSession(
             currentUser.personalId,
             activePeer.personalId,
             {
-              identityKeyPub: activePeer.identityKeyPub,
-              signedPreKeyPub: activePeer.signedPreKeyPub,
+              identityKeyPub: peerIdentityKeyPub,
+              signedPreKeyPub: peerSignedPreKeyPub,
             }
           );
           session = newSession;
@@ -695,11 +824,16 @@ export default function LunarisSanctuaryApp() {
       vault.saveMessage(activePeer.personalId, localMsg);
       setMessages(vault.getMessagesForChat(activePeer.personalId));
 
-      await fetch('/api/relay/send', {
+      const sendRes = await fetch('/api/relay/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(packet),
       });
+
+      if (sendRes.ok) {
+        vault.updateMessage(activePeer.personalId, msgId, (m) => ({ ...m, status: 'delivered' }));
+        setMessages(vault.getMessagesForChat(activePeer.personalId));
+      }
     } catch (err: any) {
       alert(`File encryption error: ${err.message}`);
     }
@@ -791,6 +925,8 @@ export default function LunarisSanctuaryApp() {
         fromDisplayName: currentUser.displayName,
         fromAvatarId: currentUser.avatarId,
         fromBio: currentUser.bio,
+        fromIdentityKeyPub: currentUser.identityKeyPub,
+        fromSignedPreKeyPub: currentUser.signedPreKeyPub,
         toUserId: normTarget,
       }),
     });
@@ -817,6 +953,8 @@ export default function LunarisSanctuaryApp() {
                 displayName: currentUser.displayName,
                 avatarId: currentUser.avatarId,
                 bio: currentUser.bio,
+                identityKeyPub: currentUser.identityKeyPub,
+                signedPreKeyPub: currentUser.signedPreKeyPub,
               },
             })
           )
@@ -831,6 +969,20 @@ export default function LunarisSanctuaryApp() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(signalPacket),
     }).catch(() => {});
+
+    if (data.targetUser) {
+      vault.updateAcceptedFriend(normTarget, (f) => ({
+        ...f,
+        peer: {
+          ...f.peer,
+          displayName: data.targetUser.displayName || f.peer.displayName,
+          avatarId: data.targetUser.avatarId || f.peer.avatarId,
+          bio: data.targetUser.bio || f.peer.bio,
+          identityKeyPub: data.targetUser.identityKeyPub || f.peer.identityKeyPub,
+          signedPreKeyPub: data.targetUser.signedPreKeyPub || f.peer.signedPreKeyPub,
+        },
+      }));
+    }
 
     if (data.alreadyConnected && data.connection) {
       fetchConnections(currentUser.personalId);
@@ -858,6 +1010,43 @@ export default function LunarisSanctuaryApp() {
           return [incomingReq, ...filtered];
         });
       }
+
+      // Notify the requester via relay signal that connection was accepted, sharing our public keys
+      const acceptSignalPacket: EncryptedPacket = {
+        packetId: `conn_acc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        senderId: currentUser.personalId,
+        recipientId: peerId,
+        type: 'signal_call',
+        ephemeralPublicKey: currentUser.identityKeyPub || '',
+        sequenceNumber: 0,
+        previousChainLength: 0,
+        iv: 'conn_acc_iv',
+        ciphertext: btoa(
+          unescape(
+            encodeURIComponent(
+              JSON.stringify({
+                callAction: 'connection_accepted',
+                sender: {
+                  personalId: currentUser.personalId,
+                  displayName: currentUser.displayName,
+                  avatarId: currentUser.avatarId,
+                  bio: currentUser.bio,
+                  identityKeyPub: currentUser.identityKeyPub,
+                  signedPreKeyPub: currentUser.signedPreKeyPub,
+                },
+              })
+            )
+          )
+        ),
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 10 * 60 * 1000,
+      };
+
+      fetch('/api/relay/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(acceptSignalPacket),
+      }).catch(() => {});
     } else if (action === 'reject' || action === 'block') {
       vault.removeAcceptedFriend(peerId);
       setAcceptedConnections((prev) => prev.filter((p) => p.peer.personalId !== peerId));
@@ -870,6 +1059,11 @@ export default function LunarisSanctuaryApp() {
         currentUserId: currentUser.personalId,
         targetUserId: peerId,
         action,
+        acceptorIdentityKeyPub: currentUser.identityKeyPub,
+        acceptorSignedPreKeyPub: currentUser.signedPreKeyPub,
+        acceptorDisplayName: currentUser.displayName,
+        acceptorAvatarId: currentUser.avatarId,
+        acceptorBio: currentUser.bio,
       }),
     });
     fetchConnections(currentUser.personalId);

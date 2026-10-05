@@ -97,10 +97,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             onClose();
             return;
           }
-          throw new Error(data.error || 'Login failed');
+          throw new Error(data.error || 'Authentication failed');
         }
 
-        onSuccess(data.user, data.token);
+        const userObj = data.user;
+        const existingBundle = vault.getUserKeyBundle(userObj.personalId);
+        if (!existingBundle) {
+          try {
+            const identityPair = await generateECDHKeyPair();
+            const signedPreKeyPair = await generateECDHKeyPair();
+            const identityKeyPub = await exportPublicKey(identityPair.publicKey);
+            const signedPreKeyPub = await exportPublicKey(signedPreKeyPair.publicKey);
+            const identityKeyPriv = await exportPrivateKey(identityPair.privateKey);
+            const signedPreKeyPriv = await exportPrivateKey(signedPreKeyPair.privateKey);
+            vault.saveUserKeyBundle(userObj.personalId, {
+              identityKeyPriv,
+              signedPreKeyPriv,
+            });
+            userObj.identityKeyPub = identityKeyPub;
+            userObj.signedPreKeyPub = signedPreKeyPub;
+          } catch (keyErr) {
+            console.warn('Device key generation error on login:', keyErr);
+          }
+        }
+
+        onSuccess(userObj, data.token);
         onClose();
       }
     } catch (err: any) {

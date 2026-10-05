@@ -33,6 +33,13 @@ export interface ConnectionRecord {
   initiatorDisplayName?: string;
   initiatorAvatarId?: string;
   initiatorBio?: string;
+  initiatorIdentityKeyPub?: string;
+  initiatorSignedPreKeyPub?: string;
+  targetDisplayName?: string;
+  targetAvatarId?: string;
+  targetBio?: string;
+  targetIdentityKeyPub?: string;
+  targetSignedPreKeyPub?: string;
   status: 'pending' | 'accepted' | 'rejected' | 'blocked';
   createdAt: number;
   updatedAt: number;
@@ -262,7 +269,8 @@ class ServerStorage {
     idB: string,
     initiatorId: string,
     status: ConnectionRecord['status'] = 'pending',
-    initiatorMeta?: { displayName?: string; avatarId?: string; bio?: string }
+    initiatorMeta?: { displayName?: string; avatarId?: string; bio?: string; identityKeyPub?: string; signedPreKeyPub?: string },
+    targetMeta?: { displayName?: string; avatarId?: string; bio?: string; identityKeyPub?: string; signedPreKeyPub?: string }
   ): ConnectionRecord {
     const key = this.getConnectionKey(idA, idB);
     const existing = this.connections.get(key);
@@ -272,6 +280,13 @@ class ServerStorage {
       if (initiatorMeta?.displayName) existing.initiatorDisplayName = initiatorMeta.displayName;
       if (initiatorMeta?.avatarId) existing.initiatorAvatarId = initiatorMeta.avatarId;
       if (initiatorMeta?.bio) existing.initiatorBio = initiatorMeta.bio;
+      if (initiatorMeta?.identityKeyPub) existing.initiatorIdentityKeyPub = initiatorMeta.identityKeyPub;
+      if (initiatorMeta?.signedPreKeyPub) existing.initiatorSignedPreKeyPub = initiatorMeta.signedPreKeyPub;
+      if (targetMeta?.displayName) existing.targetDisplayName = targetMeta.displayName;
+      if (targetMeta?.avatarId) existing.targetAvatarId = targetMeta.avatarId;
+      if (targetMeta?.bio) existing.targetBio = targetMeta.bio;
+      if (targetMeta?.identityKeyPub) existing.targetIdentityKeyPub = targetMeta.identityKeyPub;
+      if (targetMeta?.signedPreKeyPub) existing.targetSignedPreKeyPub = targetMeta.signedPreKeyPub;
       this.syncConnectionToUpstash(existing);
       return existing;
     }
@@ -284,6 +299,13 @@ class ServerStorage {
       initiatorDisplayName: initiatorMeta?.displayName,
       initiatorAvatarId: initiatorMeta?.avatarId,
       initiatorBio: initiatorMeta?.bio,
+      initiatorIdentityKeyPub: initiatorMeta?.identityKeyPub,
+      initiatorSignedPreKeyPub: initiatorMeta?.signedPreKeyPub,
+      targetDisplayName: targetMeta?.displayName,
+      targetAvatarId: targetMeta?.avatarId,
+      targetBio: targetMeta?.bio,
+      targetIdentityKeyPub: targetMeta?.identityKeyPub,
+      targetSignedPreKeyPub: targetMeta?.signedPreKeyPub,
       status,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -408,15 +430,16 @@ class ServerStorage {
 
   // --- Ephemeral Relay Queue ---
   public enqueueRelayPacket(packet: EncryptedPacket): boolean {
-    // Enforcement: regular messages require accepted connection; call signals allowed unless blocked
     const conn = this.getConnection(packet.senderId, packet.recipientId);
+    if (conn && conn.status === 'blocked') {
+      return false; // Blocked
+    }
+
+    // Encrypted chat messages and media strictly require an accepted mutual connection.
+    // Signaling packets (signal_call) are permitted for connection negotiation and call signaling.
     if (packet.type !== 'signal_call') {
       if (!conn || conn.status !== 'accepted') {
-        return false; // Connection not accepted
-      }
-    } else {
-      if (conn && conn.status === 'blocked') {
-        return false; // Blocked
+        return false;
       }
     }
 

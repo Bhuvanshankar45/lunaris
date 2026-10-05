@@ -21,13 +21,20 @@ export async function GET(request: Request) {
     const peerId = conn.userIdA === userId ? conn.userIdB : conn.userIdA;
     const peerUser = await serverStorage.getUserByPersonalIdAsync(peerId);
 
+    const isInitiator = conn.initiatorId === peerId;
+    const fallbackName = isInitiator ? conn.initiatorDisplayName : conn.targetDisplayName;
+    const fallbackBio = isInitiator ? conn.initiatorBio : conn.targetBio;
+    const fallbackAvatar = isInitiator ? conn.initiatorAvatarId : conn.targetAvatarId;
+    const fallbackIdentityKey = isInitiator ? conn.initiatorIdentityKeyPub : conn.targetIdentityKeyPub;
+    const fallbackSignedPreKey = isInitiator ? conn.initiatorSignedPreKeyPub : conn.targetSignedPreKeyPub;
+
     const publicPeer = {
       personalId: peerId,
-      displayName: peerUser?.displayName || (conn.initiatorId === peerId ? conn.initiatorDisplayName : undefined) || peerId,
-      bio: peerUser?.bio || (conn.initiatorId === peerId ? conn.initiatorBio : '') || '',
-      avatarId: peerUser?.avatarId || (conn.initiatorId === peerId ? conn.initiatorAvatarId : 'avatar-1') || 'avatar-1',
-      identityKeyPub: peerUser ? peerUser.identityKeyPub : '',
-      signedPreKeyPub: peerUser ? peerUser.signedPreKeyPub : '',
+      displayName: peerUser?.displayName || fallbackName || peerId,
+      bio: peerUser?.bio || fallbackBio || '',
+      avatarId: peerUser?.avatarId || fallbackAvatar || 'avatar-1',
+      identityKeyPub: peerUser ? peerUser.identityKeyPub : (fallbackIdentityKey || ''),
+      signedPreKeyPub: peerUser ? peerUser.signedPreKeyPub : (fallbackSignedPreKey || ''),
       createdAt: peerUser ? peerUser.createdAt : conn.createdAt,
     };
 

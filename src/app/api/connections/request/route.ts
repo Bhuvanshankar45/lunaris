@@ -5,7 +5,7 @@ import { isValidPersonalId, normalizePersonalId } from '@/lib/crypto/id-generato
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { fromUserId, toUserId, fromDisplayName, fromAvatarId, fromBio } = body;
+    const { fromUserId, toUserId, fromDisplayName, fromAvatarId, fromBio, fromIdentityKeyPub, fromSignedPreKeyPub } = body;
 
     if (!fromUserId || !toUserId) {
       return NextResponse.json({ error: 'Both sender and recipient IDs are required.' }, { status: 400 });
@@ -37,6 +37,16 @@ export async function POST(request: Request) {
           message: 'You are already connected as friends!',
           connection: existing,
           alreadyConnected: true,
+          targetUser: targetUser
+            ? {
+                personalId: targetUser.personalId,
+                displayName: targetUser.displayName,
+                bio: targetUser.bio,
+                avatarId: targetUser.avatarId,
+                identityKeyPub: targetUser.identityKeyPub,
+                signedPreKeyPub: targetUser.signedPreKeyPub,
+              }
+            : undefined,
         });
       }
       if (existing.status === 'pending') {
@@ -44,6 +54,16 @@ export async function POST(request: Request) {
           success: true,
           message: 'Connection request is already pending review.',
           connection: existing,
+          targetUser: targetUser
+            ? {
+                personalId: targetUser.personalId,
+                displayName: targetUser.displayName,
+                bio: targetUser.bio,
+                avatarId: targetUser.avatarId,
+                identityKeyPub: targetUser.identityKeyPub,
+                signedPreKeyPub: targetUser.signedPreKeyPub,
+              }
+            : undefined,
         });
       }
     }
@@ -57,13 +77,34 @@ export async function POST(request: Request) {
         displayName: fromDisplayName,
         avatarId: fromAvatarId,
         bio: fromBio,
-      }
+        identityKeyPub: fromIdentityKeyPub,
+        signedPreKeyPub: fromSignedPreKeyPub,
+      },
+      targetUser
+        ? {
+            displayName: targetUser.displayName,
+            avatarId: targetUser.avatarId,
+            bio: targetUser.bio,
+            identityKeyPub: targetUser.identityKeyPub,
+            signedPreKeyPub: targetUser.signedPreKeyPub,
+          }
+        : undefined
     );
 
     return NextResponse.json({
       success: true,
       message: 'Connection request sent. Messaging will only be unlocked once accepted.',
       connection,
+      targetUser: targetUser
+        ? {
+            personalId: targetUser.personalId,
+            displayName: targetUser.displayName,
+            bio: targetUser.bio,
+            avatarId: targetUser.avatarId,
+            identityKeyPub: targetUser.identityKeyPub,
+            signedPreKeyPub: targetUser.signedPreKeyPub,
+          }
+        : undefined,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Failed to send request.' }, { status: 500 });

@@ -381,6 +381,15 @@ class LocalVault {
     this.saveAcceptedFriends(filtered);
   }
 
+  public updateAcceptedFriend(
+    peerId: string,
+    updater: (friend: { connectionId: string; peer: PeerContact; updatedAt?: number }) => { connectionId: string; peer: PeerContact; updatedAt?: number }
+  ): void {
+    const current = this.getAcceptedFriends();
+    const updated = current.map((f) => (f.peer.personalId === peerId ? updater(f) : f));
+    this.saveAcceptedFriends(updated);
+  }
+
   public isFriend(peerId: string): boolean {
     const friends = this.getAcceptedFriends();
     return friends.some((f) => f.peer.personalId === peerId);

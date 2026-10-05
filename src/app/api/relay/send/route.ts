@@ -10,15 +10,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Malformed encrypted packet.' }, { status: 400 });
     }
 
-    // Server privacy rule: Check connection if available in store.
-    // In serverless distributed deployments (e.g. Vercel), allow end-to-end encrypted packet transit
-    // between valid IDs even if connection handshake was saved in a different worker instance.
-    const conn = serverStorage.getConnection(packet.senderId, packet.recipientId);
+    // Server privacy rule: Check connection in store or remote KV
+    const conn = await serverStorage.getConnectionAsync(packet.senderId, packet.recipientId);
     if (conn && conn.status === 'blocked') {
       return NextResponse.json(
         { error: 'Encrypted relay disallowed: user connection is blocked.' },
         { status: 403 }
       );
+    }
+    if (packet.type !== 'signal_call') {
+      if (!conn || conn.status !== 'accepted') {
+        return NextResponse.json(
+          { error: 'Encrypted relay disallowed: mutual connection is not accepted.' },
+          { status: 403 }
+        );
+      }
     }
 
     // Set strict expiry: 10 minutes maximum delivery window
