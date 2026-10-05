@@ -23,9 +23,9 @@ export async function GET(request: Request) {
 
     const publicPeer = {
       personalId: peerId,
-      displayName: peerUser ? peerUser.displayName : peerId,
-      bio: peerUser ? peerUser.bio : '',
-      avatarId: peerUser ? peerUser.avatarId : 'avatar-1',
+      displayName: peerUser?.displayName || (conn.initiatorId === peerId ? conn.initiatorDisplayName : undefined) || peerId,
+      bio: peerUser?.bio || (conn.initiatorId === peerId ? conn.initiatorBio : '') || '',
+      avatarId: peerUser?.avatarId || (conn.initiatorId === peerId ? conn.initiatorAvatarId : 'avatar-1') || 'avatar-1',
       identityKeyPub: peerUser ? peerUser.identityKeyPub : '',
       signedPreKeyPub: peerUser ? peerUser.signedPreKeyPub : '',
       createdAt: peerUser ? peerUser.createdAt : conn.createdAt,

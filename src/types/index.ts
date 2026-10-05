@@ -30,6 +30,7 @@ export interface UserProfile {
 export interface PeerContact {
   personalId: string;
   displayName: string;
+  nickname?: string;
   bio: string;
   avatarId: string;
   identityKeyPub: string;

@@ -109,7 +109,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div>
               <p className="text-xs font-bold text-[#1C1E1B]">
-                {incomingRequests.length} Incoming Connection Request{incomingRequests.length > 1 ? 's' : ''}
+                {incomingRequests.length === 1
+                  ? `${incomingRequests[0].peer.displayName || 'A contact'} wants to connect`
+                  : `${incomingRequests.length} Incoming Connection Requests`}
               </p>
               <p className="text-[11px] text-[#4A4E47]">
                 Pending review. Messaging is strictly locked until you approve.
@@ -159,30 +161,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              {acceptedConnections.map(({ connectionId, peer }) => (
-                <div
-                  key={connectionId}
-                  className="p-4 rounded-2xl bg-[#E0E0D5] border border-[#CBCCC7] hover:border-[#B8AB90] transition-colors flex flex-col justify-between shadow-2xs"
-                >
-                  <div className="flex items-start gap-3 mb-3">
-                    <Avatar name={peer.displayName} size="md" />
-                    <div className="flex-1 min-w-0">
-                      <h4 className="font-semibold text-xs sm:text-sm text-[#1C1E1B] truncate">{peer.displayName}</h4>
-                      <p className="text-[10px] font-mono text-[#6E746A]">{peer.personalId}</p>
+              {acceptedConnections.map(({ connectionId, peer }) => {
+                const displayName = peer.nickname || peer.displayName;
+                return (
+                  <div
+                    key={connectionId}
+                    className="p-4 rounded-2xl bg-[#E0E0D5] border border-[#CBCCC7] hover:border-[#B8AB90] transition-colors flex flex-col justify-between shadow-2xs"
+                  >
+                    <div className="flex items-start gap-3 mb-3">
+                      <Avatar name={displayName} size="md" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <h4 className="font-semibold text-xs sm:text-sm text-[#1C1E1B] truncate">{displayName}</h4>
+                          {peer.nickname && (
+                            <span className="text-[10px] text-[#6E746A] truncate">({peer.displayName})</span>
+                          )}
+                        </div>
+                        <p className="text-[10px] font-mono text-[#6E746A]">{peer.personalId}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#CBCCC7]/60">
+                      <button
+                        onClick={() => onStartChat(peer)}
+                        className="flex-1 py-1.5 px-3 rounded-xl bg-[#D0CABA] hover:bg-[#CBCCC7] text-xs font-medium text-[#1C1E1B] flex items-center justify-center gap-1.5 transition-colors"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 text-[#525C51]" />
+                        <span>Chat</span>
+                      </button>
                     </div>
                   </div>
-
-                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#CBCCC7]/60">
-                    <button
-                      onClick={() => onStartChat(peer)}
-                      className="flex-1 py-1.5 px-3 rounded-xl bg-[#D0CABA] hover:bg-[#CBCCC7] text-xs font-medium text-[#1C1E1B] flex items-center justify-center gap-1.5 transition-colors"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5 text-[#525C51]" />
-                      <span>Chat</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

@@ -5,7 +5,7 @@ import { isValidPersonalId, normalizePersonalId } from '@/lib/crypto/id-generato
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { fromUserId, toUserId } = body;
+    const { fromUserId, toUserId, fromDisplayName, fromAvatarId, fromBio } = body;
 
     if (!fromUserId || !toUserId) {
       return NextResponse.json({ error: 'Both sender and recipient IDs are required.' }, { status: 400 });
@@ -48,7 +48,17 @@ export async function POST(request: Request) {
       }
     }
 
-    const connection = serverStorage.createConnection(normFrom, normTo, normFrom, 'pending');
+    const connection = serverStorage.createConnection(
+      normFrom,
+      normTo,
+      normFrom,
+      'pending',
+      {
+        displayName: fromDisplayName,
+        avatarId: fromAvatarId,
+        bio: fromBio,
+      }
+    );
 
     return NextResponse.json({
       success: true,

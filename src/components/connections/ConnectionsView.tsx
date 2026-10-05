@@ -14,6 +14,8 @@ import {
   Clock,
   Search,
   ExternalLink,
+  Pencil,
+  Edit2,
 } from 'lucide-react';
 import { Avatar } from '../ui/Avatar';
 import { PeerContact } from '@/types';
@@ -30,6 +32,7 @@ interface ConnectionsViewProps {
   onStartCall: (peer: PeerContact, mode: 'voice-1to1' | 'video-1to1') => void;
   onViewSafetyNumber: (peer: PeerContact) => void;
   onRemoveConnection: (peerId: string) => void;
+  onUpdateNickname?: (peerId: string, nickname: string | null) => void;
 }
 
 export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
@@ -44,12 +47,14 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
   onStartCall,
   onViewSafetyNumber,
   onRemoveConnection,
+  onUpdateNickname,
 }) => {
   const [activeTab, setActiveTab] = useState<'accepted' | 'incoming' | 'outgoing' | 'blocked'>('accepted');
   const [searchQuery, setSearchQuery] = useState('');
 
   const filteredAccepted = accepted.filter(
     (c) =>
+      (c.peer.nickname && c.peer.nickname.toLowerCase().includes(searchQuery.toLowerCase())) ||
       c.peer.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.peer.personalId.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -171,11 +176,20 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
                   className="p-4 rounded-2xl bg-[#E0E0D5] border border-[#CBCCC7] hover:border-[#B8AB90] transition-colors flex flex-col justify-between shadow-2xs"
                 >
                   <div className="flex items-start gap-3 mb-3">
-                    <Avatar name={peer.displayName} size="md" />
+                    <Avatar name={peer.nickname || peer.displayName} size="md" />
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-semibold text-sm text-[#1C1E1B] truncate">{peer.displayName}</h4>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#D0CABA] text-[#1C1E1B] border border-[#B8AB90]">
+                      <div className="flex items-center justify-between gap-1">
+                        <div className="truncate">
+                          <h4 className="font-semibold text-sm text-[#1C1E1B] truncate flex items-center gap-1.5">
+                            <span>{peer.nickname || peer.displayName}</span>
+                            {peer.nickname && (
+                              <span className="text-[10px] text-[#525C51] font-normal truncate">
+                                ({peer.displayName})
+                              </span>
+                            )}
+                          </h4>
+                        </div>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#D0CABA] text-[#1C1E1B] border border-[#B8AB90] shrink-0">
                           {peer.personalId}
                         </span>
                       </div>
@@ -212,6 +226,23 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          const currentNick = peer.nickname || '';
+                          const newNick = prompt(
+                            `Give a custom nickname to ${peer.displayName}:`,
+                            currentNick
+                          );
+                          if (newNick !== null) {
+                            onUpdateNickname?.(peer.personalId, newNick.trim() || null);
+                          }
+                        }}
+                        className="p-1.5 rounded-lg text-[#4A4E47] hover:text-[#1C1E1B] hover:bg-[#CBCCC7] transition-colors"
+                        title={peer.nickname ? `Edit nickname (${peer.nickname})` : 'Set contact nickname'}
+                      >
+                        <Pencil className="w-3.5 h-3.5 text-[#525C51]" />
+                      </button>
+
                       <button
                         onClick={() => onViewSafetyNumber(peer)}
                         className="p-1.5 rounded-lg text-[#4A4E47] hover:text-[#1C1E1B] hover:bg-[#CBCCC7]"
@@ -254,14 +285,16 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
               {incoming.map(({ connectionId, peer }) => (
                 <div
                   key={connectionId}
-                  className="p-4 rounded-2xl bg-[#E0E0D5] border border-[#B8AB90] flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs"
+                  className="p-4 rounded-2xl bg-[#E0E0D5] border-2 border-[#8EBA94] flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs animate-in fade-in"
                 >
                   <div className="flex items-start gap-3">
                     <Avatar name={peer.displayName} size="md" />
                     <div>
                       <div className="flex items-center gap-2">
-                        <h4 className="font-semibold text-sm text-[#1C1E1B]">{peer.displayName}</h4>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#D0CABA] text-[#1C1E1B]">
+                        <h4 className="font-bold text-sm text-[#1C1E1B]">
+                          {peer.displayName && peer.displayName !== peer.personalId ? peer.displayName : 'New Contact'}
+                        </h4>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#D0CABA] text-[#1C1E1B] border border-[#B8AB90]">
                           {peer.personalId}
                         </span>
                       </div>

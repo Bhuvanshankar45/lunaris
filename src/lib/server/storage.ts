@@ -30,6 +30,9 @@ export interface ConnectionRecord {
   userIdA: string; // personalId
   userIdB: string; // personalId
   initiatorId: string;
+  initiatorDisplayName?: string;
+  initiatorAvatarId?: string;
+  initiatorBio?: string;
   status: 'pending' | 'accepted' | 'rejected' | 'blocked';
   createdAt: number;
   updatedAt: number;
@@ -258,13 +261,17 @@ class ServerStorage {
     idA: string,
     idB: string,
     initiatorId: string,
-    status: ConnectionRecord['status'] = 'pending'
+    status: ConnectionRecord['status'] = 'pending',
+    initiatorMeta?: { displayName?: string; avatarId?: string; bio?: string }
   ): ConnectionRecord {
     const key = this.getConnectionKey(idA, idB);
     const existing = this.connections.get(key);
     if (existing) {
       existing.status = status;
       existing.updatedAt = Date.now();
+      if (initiatorMeta?.displayName) existing.initiatorDisplayName = initiatorMeta.displayName;
+      if (initiatorMeta?.avatarId) existing.initiatorAvatarId = initiatorMeta.avatarId;
+      if (initiatorMeta?.bio) existing.initiatorBio = initiatorMeta.bio;
       this.syncConnectionToUpstash(existing);
       return existing;
     }
@@ -274,6 +281,9 @@ class ServerStorage {
       userIdA: idA < idB ? idA : idB,
       userIdB: idA < idB ? idB : idA,
       initiatorId,
+      initiatorDisplayName: initiatorMeta?.displayName,
+      initiatorAvatarId: initiatorMeta?.avatarId,
+      initiatorBio: initiatorMeta?.bio,
       status,
       createdAt: Date.now(),
       updatedAt: Date.now(),

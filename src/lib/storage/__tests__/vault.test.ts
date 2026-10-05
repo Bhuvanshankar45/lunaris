@@ -179,4 +179,37 @@ describe('Arca Local Vault & Cryptographic Shredding', () => {
     expect(vault.getSavedAccounts().length).toBe(1);
     expect(vault.getSavedAccounts()[0].personalId).toBe('ID:WTYJ5425');
   });
+
+  it('saves, retrieves, and clears custom contact nicknames locally and injects them into accepted friends', () => {
+    expect(vault.getNickname(peerId)).toBeNull();
+
+    vault.setNickname(peerId, 'Bestie');
+    expect(vault.getNickname(peerId)).toBe('Bestie');
+
+    // Test automatic injection into accepted friends
+    vault.addAcceptedFriend({
+      connectionId: 'conn_nick_1',
+      peer: {
+        personalId: peerId,
+        displayName: 'Original Name',
+        bio: 'Hello',
+        avatarId: 'avatar-1',
+        identityKeyPub: 'pub',
+        signedPreKeyPub: 'pre',
+        createdAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    });
+
+    const friends = vault.getAcceptedFriends();
+    expect(friends.length).toBe(1);
+    expect(friends[0].peer.nickname).toBe('Bestie');
+    expect(friends[0].peer.displayName).toBe('Original Name');
+
+    // Remove nickname
+    vault.setNickname(peerId, null);
+    expect(vault.getNickname(peerId)).toBeNull();
+    const friendsAfter = vault.getAcceptedFriends();
+    expect(friendsAfter[0].peer.nickname).toBeUndefined();
+  });
 });

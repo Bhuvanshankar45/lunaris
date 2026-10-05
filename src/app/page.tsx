@@ -113,7 +113,16 @@ export default function LunarisSanctuaryApp() {
         const mergedMap = new Map<string, { connectionId: string; peer: PeerContact; updatedAt?: number }>();
 
         localFriends.forEach((f) => mergedMap.set(f.peer.personalId, f));
-        serverAccepted.forEach((f: any) => mergedMap.set(f.peer.personalId, f));
+        serverAccepted.forEach((f: any) => {
+          const storedNickname = vault.getNickname(f.peer.personalId);
+          mergedMap.set(f.peer.personalId, {
+            ...f,
+            peer: {
+              ...f.peer,
+              nickname: storedNickname || f.peer.nickname,
+            },
+          });
+        });
 
         const finalAccepted = Array.from(mergedMap.values());
         setAcceptedConnections(finalAccepted);
@@ -446,7 +455,9 @@ export default function LunarisSanctuaryApp() {
 
   // Start chat with a peer
   const handleStartChat = async (peer: PeerContact) => {
-    setActivePeer(peer);
+    const storedNick = vault.getNickname(peer.personalId);
+    const peerWithNick = storedNick ? { ...peer, nickname: storedNick } : peer;
+    setActivePeer(peerWithNick);
     setCurrentScreen('chat');
 
     // Load local messages
@@ -775,7 +786,13 @@ export default function LunarisSanctuaryApp() {
     const res = await fetch('/api/connections/request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fromUserId: currentUser.personalId, toUserId: normTarget }),
+      body: JSON.stringify({
+        fromUserId: currentUser.personalId,
+        fromDisplayName: currentUser.displayName,
+        fromAvatarId: currentUser.avatarId,
+        fromBio: currentUser.bio,
+        toUserId: normTarget,
+      }),
     });
     const data = await res.json();
     if (!res.ok) return { success: false, message: data.error || 'Failed to send request' };
@@ -799,6 +816,7 @@ export default function LunarisSanctuaryApp() {
                 personalId: currentUser.personalId,
                 displayName: currentUser.displayName,
                 avatarId: currentUser.avatarId,
+                bio: currentUser.bio,
               },
             })
           )
@@ -868,6 +886,16 @@ export default function LunarisSanctuaryApp() {
         setActivePeer(null);
         setCurrentScreen('dashboard');
       }
+    }
+  };
+
+  // Update contact nickname locally
+  const handleUpdateNickname = (peerId: string, nickname: string | null) => {
+    vault.setNickname(peerId, nickname);
+    const updatedFriends = vault.getAcceptedFriends();
+    setAcceptedConnections(updatedFriends);
+    if (activePeer && activePeer.personalId === peerId) {
+      setActivePeer((prev) => (prev ? { ...prev, nickname: nickname || undefined } : null));
     }
   };
 
@@ -1251,6 +1279,7 @@ export default function LunarisSanctuaryApp() {
             optInReadReceipts={settings.optInReadReceipts}
             disappearingTimer={settings.disappearingTimerSeconds}
             onSetDisappearingTimer={(sec) => handleUpdateSettings({ disappearingTimerSeconds: sec })}
+            onUpdateNickname={handleUpdateNickname}
           />
         )}
 
@@ -1267,6 +1296,7 @@ export default function LunarisSanctuaryApp() {
             onStartCall={handleStartCall}
             onViewSafetyNumber={handleStartChat}
             onRemoveConnection={handleRemoveConnection}
+            onUpdateNickname={handleUpdateNickname}
           />
         )}
 

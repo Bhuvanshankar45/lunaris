@@ -53,6 +53,7 @@ interface ChatViewProps {
   optInReadReceipts: boolean;
   disappearingTimer: number;
   onSetDisappearingTimer: (seconds: number) => void;
+  onUpdateNickname?: (peerId: string, nickname: string | null) => void;
 }
 
 const EMOJI_LIST = ['🔒', '👍', '❤️', '👏', '😂', '🔥', '🙏', '🛡️'];
@@ -87,6 +88,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   optInReadReceipts,
   disappearingTimer,
   onSetDisappearingTimer,
+  onUpdateNickname,
 }) => {
   const [inputText, setInputText] = useState('');
   const [replyingTo, setReplyingTo] = useState<StoredLocalMessage | null>(null);
@@ -219,6 +221,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           ) : (
             filteredConnections.map(({ connectionId, peer }) => {
               const isSelected = activePeer?.personalId === peer.personalId;
+              const displayName = peer.nickname || peer.displayName;
               return (
                 <button
                   key={connectionId}
@@ -227,11 +230,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     isSelected ? 'bg-[#D0CABA]' : 'hover:bg-[#CBCCC7]/50'
                   }`}
                 >
-                  <Avatar name={peer.displayName} size="md" />
+                  <Avatar name={displayName} size="md" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <p className="font-semibold text-xs text-[#1C1E1B] truncate">{peer.displayName}</p>
-                      <span className="text-[10px] font-mono text-[#6E746A]">{peer.personalId}</span>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <p className="font-semibold text-xs text-[#1C1E1B] truncate">{displayName}</p>
+                        {peer.nickname && (
+                          <span className="text-[10px] text-[#6E746A] truncate">({peer.displayName})</span>
+                        )}
+                      </div>
+                      <span className="text-[10px] font-mono text-[#6E746A] shrink-0 ml-1">{peer.personalId}</span>
                     </div>
                     <p className="text-[11px] text-[#4A4E47] truncate mt-0.5">
                       {isSelected ? 'Active zero-knowledge session' : peer.bio || 'Encrypted chat available'}
@@ -258,13 +266,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <ChevronLeft className="w-5 h-5" />
               </button>
 
-              <Avatar name={activePeer.displayName} size="sm" />
+              <Avatar name={activePeer.nickname || activePeer.displayName} size="sm" />
 
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="font-semibold text-xs sm:text-sm text-[#1C1E1B] truncate">
-                    {activePeer.displayName}
+                    {activePeer.nickname || activePeer.displayName}
                   </h3>
+                  {activePeer.nickname && (
+                    <span className="text-[10px] text-[#6E746A] hidden sm:inline truncate">
+                      ({activePeer.displayName})
+                    </span>
+                  )}
+                  {onUpdateNickname && (
+                    <button
+                      onClick={() => {
+                        const current = activePeer.nickname || '';
+                        const newNick = window.prompt(
+                          `Give a custom nickname to ${activePeer.displayName} (leave blank to remove):`,
+                          current
+                        );
+                        if (newNick !== null) {
+                          onUpdateNickname(activePeer.personalId, newNick.trim() || null);
+                        }
+                      }}
+                      className="p-1 rounded-md text-[#6E746A] hover:text-[#1C1E1B] hover:bg-[#CBCCC7] transition-colors"
+                      title={activePeer.nickname ? `Edit nickname (${activePeer.nickname})` : 'Give a nickname'}
+                    >
+                      <Edit2 className="w-3 h-3 text-[#525C51]" />
+                    </button>
+                  )}
                   <button
                     onClick={() => setShowSafetyModal(true)}
                     className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-[#D0CABA] text-[#1C1E1B] border border-[#B8AB90] hover:bg-[#CBCCC7]"
@@ -274,7 +305,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <span className="hidden sm:inline">{isSafetyVerified ? 'Verified' : 'Verify'}</span>
                   </button>
                 </div>
-                <p className="text-[11px] font-mono text-[#6E746A] truncate">{activePeer.personalId}</p>
+                <p className="text-[11px] font-mono text-[#6E746A] truncate">
+                  {activePeer.personalId}
+                  {activePeer.nickname && <span className="sm:hidden text-[10px] ml-1.5 font-sans">({activePeer.displayName})</span>}
+                </p>
               </div>
             </div>
 
@@ -361,6 +395,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                 {showOptionsMenu && (
                   <div className="absolute right-0 mt-2 w-48 bg-[#E0E0D5] border border-[#B8AB90] rounded-2xl p-1.5 shadow-xl z-50">
+                    {onUpdateNickname && (
+                      <button
+                        onClick={() => {
+                          setShowOptionsMenu(false);
+                          const current = activePeer.nickname || '';
+                          const newNick = window.prompt(
+                            `Give a custom nickname to ${activePeer.displayName} (leave blank to remove):`,
+                            current
+                          );
+                          if (newNick !== null) {
+                            onUpdateNickname(activePeer.personalId, newNick.trim() || null);
+                          }
+                        }}
+                        className="w-full text-left px-3 py-2 text-xs rounded-xl hover:bg-[#CBCCC7] flex items-center gap-2 text-[#1C1E1B]"
+                      >
+                        <Edit2 className="w-4 h-4 text-[#525C51]" />
+                        <span>{activePeer.nickname ? 'Edit Nickname' : 'Give Nickname'}</span>
+                      </button>
+                    )}
+
                     <button
                       onClick={() => {
                         setShowSafetyModal(true);

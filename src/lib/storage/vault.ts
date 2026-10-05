@@ -19,6 +19,7 @@ const STORAGE_KEYS = {
   BLOCKED_USERS: 'lunaris_blocked_users',
   SAFETY_NUMBERS: 'lunaris_safety_numbers',
   ACCEPTED_FRIENDS: 'lunaris_accepted_friends',
+  NICKNAMES: 'lunaris_contact_nicknames',
 };
 
 export interface UserSettings {
@@ -293,6 +294,49 @@ class LocalVault {
     return bundle ? bundle.signedPreKeyPriv : null;
   }
 
+  // --- Contact Nicknames ---
+  public getNicknames(): Record<string, string> {
+    const storage = this.getStorage();
+    if (!storage) return {};
+    const raw = storage.getItem(STORAGE_KEYS.NICKNAMES);
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+
+  public getNickname(personalId: string): string | null {
+    const map = this.getNicknames();
+    return map[personalId] || null;
+  }
+
+  public setNickname(personalId: string, nickname: string | null): void {
+    const storage = this.getStorage();
+    if (!storage) return;
+    const map = this.getNicknames();
+    if (!nickname || nickname.trim() === '') {
+      delete map[personalId];
+    } else {
+      map[personalId] = nickname.trim().slice(0, 48);
+    }
+    storage.setItem(STORAGE_KEYS.NICKNAMES, JSON.stringify(map));
+
+    // Also update cached accepted friends
+    const friends = this.getAcceptedFriends();
+    let updated = false;
+    for (const f of friends) {
+      if (f.peer.personalId === personalId) {
+        f.peer.nickname = map[personalId] || undefined;
+        updated = true;
+      }
+    }
+    if (updated) {
+      this.saveAcceptedFriends(friends);
+    }
+  }
+
   // --- Permanent Friends / Accepted Connections ---
   public getAcceptedFriends(): { connectionId: string; peer: PeerContact; updatedAt?: number }[] {
     const storage = this.getStorage();
@@ -300,7 +344,15 @@ class LocalVault {
     const raw = storage.getItem(STORAGE_KEYS.ACCEPTED_FRIENDS);
     if (!raw) return [];
     try {
-      return JSON.parse(raw);
+      const friends: { connectionId: string; peer: PeerContact; updatedAt?: number }[] = JSON.parse(raw);
+      const nicknames = this.getNicknames();
+      return friends.map((f) => ({
+        ...f,
+        peer: {
+          ...f.peer,
+          nickname: nicknames[f.peer.personalId] || f.peer.nickname,
+        },
+      }));
     } catch {
       return [];
     }
@@ -313,6 +365,10 @@ class LocalVault {
   }
 
   public addAcceptedFriend(friend: { connectionId: string; peer: PeerContact; updatedAt?: number }): void {
+    const nicknames = this.getNicknames();
+    if (nicknames[friend.peer.personalId]) {
+      friend.peer.nickname = nicknames[friend.peer.personalId];
+    }
     const current = this.getAcceptedFriends();
     const filtered = current.filter((f) => f.peer.personalId !== friend.peer.personalId);
     filtered.unshift(friend);
