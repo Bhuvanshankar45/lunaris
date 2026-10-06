@@ -21,8 +21,8 @@ import { vault, DEFAULT_SETTINGS, UserSettings } from '@/lib/storage/vault';
 import { DoubleRatchetSession } from '@/lib/crypto/double-ratchet';
 import { deriveSafetyNumber, generateECDHKeyPair, exportPrivateKey, exportPublicKey } from '@/lib/crypto/primitives';
 import { encryptFileForRelay, decryptFileFromRelay } from '@/lib/crypto/file-encryption';
-import { DEMO_PREKEYS_PRIV, DEMO_PREKEYS_PUB, getFallbackPreKeyPub, getFallbackPreKeyPriv } from '@/lib/crypto/demo-keys';
-import { WifiOff, Radio, Phone, PhoneOff, Video, VideoOff } from 'lucide-react';
+import { DEMO_PREKEYS_PRIV, DEMO_PREKEYS_PUB, getFallbackPreKeyPub, getFallbackPreKeyPriv, FALLBACK_PREKEYS } from '@/lib/crypto/demo-keys';
+import { WifiOff, Radio, Phone, PhoneOff, Video, VideoOff, X, MessageSquare } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { WebRTCService } from '@/lib/webrtc/webrtc-service';
 import { normalizePersonalId } from '@/lib/crypto/id-generator';
@@ -58,6 +58,12 @@ export default function LunarisSanctuaryApp() {
     activePeerRef.current = activePeer;
   }, [activePeer]);
   const [messages, setMessages] = useState<StoredLocalMessage[]>([]);
+  const [lastMessageTime, setLastMessageTime] = useState<number>(0);
+  const [incomingToast, setIncomingToast] = useState<{
+    senderName: string;
+    text: string;
+    peer: PeerContact;
+  } | null>(null);
   const [safetyNumber, setSafetyNumber] = useState<string>('');
   const [isSafetyVerified, setIsSafetyVerified] = useState(false);
 
@@ -503,9 +509,23 @@ export default function LunarisSanctuaryApp() {
               }
             }
 
+            const userBundle = vault.getUserKeyBundle(currentUser.personalId);
             const customPrivKey = vault.getSignedPreKeyPriv(currentUser.personalId);
             const fallbackPrivKey = getFallbackPreKeyPriv(currentUser.personalId);
-            const candidatePrivKeys = [customPrivKey, fallbackPrivKey].filter(Boolean) as string[];
+            const demoPrivKey = DEMO_PREKEYS_PRIV[currentUser.personalId];
+
+            const candidatePrivKeys = Array.from(
+              new Set(
+                [
+                  userBundle?.signedPreKeyPriv,
+                  userBundle?.identityKeyPriv,
+                  customPrivKey,
+                  demoPrivKey,
+                  fallbackPrivKey,
+                  ...FALLBACK_PREKEYS.map((k) => k.priv),
+                ].filter(Boolean) as string[]
+              )
+            );
 
             let plaintext: any = null;
 
@@ -517,10 +537,14 @@ export default function LunarisSanctuaryApp() {
               } catch (decErr) {
                 console.warn('Active session decrypt error, will attempt responder re-sync with candidate keys:', decErr);
                 plaintext = null;
+                // Clear corrupted or out-of-sync session to allow fresh responder handshake
+                ratchetSessionsRef.current.delete(packet.senderId);
+                vault.deleteSession(packet.senderId);
+                session = undefined;
               }
             }
 
-            // If session did not decrypt, attempt responder session creation with candidate keys (custom private pre-key, then fallback private pre-key)
+            // If session did not decrypt, attempt responder session creation with candidate keys (custom private pre-key, identity key, then fallback keys)
             if (!plaintext && packet.ephemeralPublicKey) {
               for (const candidateKey of candidatePrivKeys) {
                 try {
@@ -639,12 +663,36 @@ export default function LunarisSanctuaryApp() {
                   .catch(() => {});
               }
 
+              // Reactive trigger for Dashboard and UI lists to update latest message preview and badge
+              setLastMessageTime(Date.now());
+
               // If currently viewing this chat, refresh messages immediately
               if (
                 activePeerRef.current &&
                 normalizePersonalId(activePeerRef.current.personalId) === senderNorm
               ) {
                 setMessages(vault.getMessagesForChat(packet.senderId));
+              } else {
+                // If not currently in this chat, display incoming toast
+                const senderContact: PeerContact =
+                  acceptedConnections.find(
+                    (c) => normalizePersonalId(c.peer.personalId) === senderNorm
+                  )?.peer || {
+                    personalId: packet.senderId,
+                    displayName: vault.getNickname(packet.senderId) || packet.senderId,
+                    bio: '',
+                    avatarId: 'avatar-1',
+                    identityKeyPub: packet.ephemeralPublicKey || '',
+                    signedPreKeyPub: packet.ephemeralPublicKey || '',
+                    createdAt: Date.now(),
+                    nickname: vault.getNickname(packet.senderId) || undefined,
+                  };
+
+                setIncomingToast({
+                  senderName: senderContact.nickname || senderContact.displayName,
+                  text: receivedMsg.file ? '📎 Media file' : (receivedMsg.text || 'New message'),
+                  peer: senderContact,
+                });
               }
 
               // Send immediate delivery confirmation back to sender
@@ -718,8 +766,10 @@ export default function LunarisSanctuaryApp() {
   const handleStartChat = async (peer: PeerContact) => {
     const storedNick = vault.getNickname(peer.personalId);
     const peerWithNick = storedNick ? { ...peer, nickname: storedNick } : peer;
+    activePeerRef.current = peerWithNick;
     setActivePeer(peerWithNick);
     setCurrentScreen('chat');
+    setIncomingToast(null);
 
     // Load local messages
     const localMsgs = vault.getMessagesForChat(peer.personalId);
@@ -767,32 +817,41 @@ export default function LunarisSanctuaryApp() {
       peerIdentityKeyPub = peerIdentityKeyPub || DEMO_PREKEYS_PUB[activePeer.personalId];
     }
 
-    if (!peerSignedPreKeyPub || !peerIdentityKeyPub) {
-      try {
-        const lookupRes = await fetch(`/api/users/lookup?id=${encodeURIComponent(activePeer.personalId)}`);
-        if (lookupRes.ok) {
-          const lookupData = await lookupRes.json();
-          if (lookupData.user) {
-            peerSignedPreKeyPub = lookupData.user.signedPreKeyPub || peerSignedPreKeyPub;
-            peerIdentityKeyPub = lookupData.user.identityKeyPub || peerIdentityKeyPub;
+    // Always query server for peer's freshest public pre-keys
+    try {
+      const lookupRes = await fetch(`/api/users/lookup?id=${encodeURIComponent(activePeer.personalId)}`);
+      if (lookupRes.ok) {
+        const lookupData = await lookupRes.json();
+        if (lookupData.user) {
+          const freshPreKey = lookupData.user.signedPreKeyPub;
+          const freshIdKey = lookupData.user.identityKeyPub;
+          if (freshPreKey && freshPreKey !== peerSignedPreKeyPub) {
+            // Peer updated or rotated keys: purge old ratchet session
+            ratchetSessionsRef.current.delete(activePeer.personalId);
+            vault.deleteSession(activePeer.personalId);
+            peerSignedPreKeyPub = freshPreKey;
+            peerIdentityKeyPub = freshIdKey || freshPreKey;
             setActivePeer((prev) => (prev ? {
               ...prev,
-              signedPreKeyPub: peerSignedPreKeyPub,
-              identityKeyPub: peerIdentityKeyPub,
+              signedPreKeyPub: freshPreKey,
+              identityKeyPub: freshIdKey || freshPreKey,
             } : null));
             vault.updateAcceptedFriend(activePeer.personalId, (f) => ({
               ...f,
               peer: {
                 ...f.peer,
-                signedPreKeyPub: peerSignedPreKeyPub,
-                identityKeyPub: peerIdentityKeyPub,
+                signedPreKeyPub: freshPreKey,
+                identityKeyPub: freshIdKey || freshPreKey,
               },
             }));
+          } else {
+            peerSignedPreKeyPub = freshPreKey || peerSignedPreKeyPub;
+            peerIdentityKeyPub = freshIdKey || peerIdentityKeyPub;
           }
         }
-      } catch (lookupErr) {
-        console.warn('Failed to lookup peer keys:', lookupErr);
       }
+    } catch (lookupErr) {
+      console.warn('Failed to lookup peer keys:', lookupErr);
     }
 
     // Check connection list fallback
@@ -1701,6 +1760,7 @@ export default function LunarisSanctuaryApp() {
             onNavigate={setCurrentScreen}
             onStartChat={handleStartChat}
             onOpenAddConnection={() => setSendRequestModalOpen(true)}
+            lastMessageTime={lastMessageTime}
           />
         )}
 
@@ -1818,6 +1878,44 @@ export default function LunarisSanctuaryApp() {
           <SettingsView settings={settings} onUpdateSettings={handleUpdateSettings} />
         )}
       </div>
+
+      {/* Floating Incoming Message Toast */}
+      {incomingToast && (
+        <div className="fixed top-20 right-4 sm:right-6 z-50 animate-in slide-in-from-top-3 fade-in duration-200">
+          <div className="bg-[#1E201D] text-[#F0EFEA] border-2 border-[#8EBA94] rounded-2xl p-3.5 shadow-2xl flex items-center gap-3.5 max-w-sm">
+            <div className="relative shrink-0">
+              <Avatar name={incomingToast.senderName} size="md" />
+              <span className="absolute -bottom-1 -right-1 w-3 h-3 bg-[#8EBA94] border-2 border-[#1E201D] rounded-full" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-bold text-[#F0EFEA] truncate">{incomingToast.senderName}</p>
+                <span className="text-[10px] text-[#8EBA94] font-medium shrink-0">New message</span>
+              </div>
+              <p className="text-xs text-[#CBCCC7] truncate mt-0.5">{incomingToast.text}</p>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => {
+                  const peer = incomingToast.peer;
+                  setIncomingToast(null);
+                  handleStartChat(peer);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-[#8EBA94] hover:bg-[#7CA782] text-[#1C1E1B] font-bold text-xs transition-colors shadow-xs"
+              >
+                Reply
+              </button>
+              <button
+                onClick={() => setIncomingToast(null)}
+                className="p-1 rounded-lg text-[#A9ABA8] hover:text-[#F0EFEA] hover:bg-white/10 transition-colors"
+                aria-label="Dismiss notification"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile Bottom Navigation */}
       {currentUser && currentScreen !== 'active-call' && (

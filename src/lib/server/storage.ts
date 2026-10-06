@@ -266,7 +266,12 @@ class ServerStorage {
     avatarId?: string,
     bio?: string
   ): void {
-    let user = this.users.get(personalId);
+    const norm = normalizePersonalId(personalId);
+    let user = this.users.get(norm);
+    if (!user) {
+      this.loadFromDisk();
+      user = this.users.get(norm);
+    }
     if (user) {
       if (identityKeyPub) user.identityKeyPub = identityKeyPub;
       if (signedPreKeyPub) user.signedPreKeyPub = signedPreKeyPub;
@@ -279,10 +284,10 @@ class ServerStorage {
       // Auto-register/restore user profile in server storage
       const restoredUser: ServerUser = {
         id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        personalId,
-        emailHash: `hash_${personalId.toLowerCase()}`,
+        personalId: norm,
+        emailHash: `hash_${norm.toLowerCase()}`,
         passwordHash: 'vault_authenticated',
-        displayName: displayName || personalId,
+        displayName: displayName || norm,
         bio: bio || '',
         avatarId: avatarId || 'avatar-1',
         identityKeyPub,

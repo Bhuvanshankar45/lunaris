@@ -8,6 +8,7 @@ import { StoredLocalMessage } from '../crypto/types';
 import { RatchetSessionState } from '../crypto/double-ratchet';
 import { UserProfile, PeerContact } from '@/types';
 import { getFallbackPreKeyPriv } from '../crypto/demo-keys';
+import { normalizePersonalId } from '../crypto/id-generator';
 
 const STORAGE_KEYS = {
   CURRENT_USER: 'lunaris_current_user',
@@ -131,7 +132,16 @@ class LocalVault {
     const storage = this.getStorage();
     if (!storage) return [];
     this.purgeExpiredMessages();
-    const raw = storage.getItem(`${STORAGE_KEYS.MESSAGES}_${chatId}`);
+    const normChat = normalizePersonalId(chatId);
+    const bareChat = normChat.startsWith('ID:') ? normChat.substring(3) : normChat;
+    
+    let raw = storage.getItem(`${STORAGE_KEYS.MESSAGES}_${normChat}`);
+    if (!raw && bareChat !== normChat) {
+      raw = storage.getItem(`${STORAGE_KEYS.MESSAGES}_${bareChat}`);
+    }
+    if (!raw && !normChat.startsWith('ID:')) {
+      raw = storage.getItem(`${STORAGE_KEYS.MESSAGES}_ID:${normChat}`);
+    }
     if (!raw) return [];
     try {
       return JSON.parse(raw);
@@ -140,30 +150,53 @@ class LocalVault {
     }
   }
 
+  public getLastMessageForChat(chatId: string): StoredLocalMessage | null {
+    const msgs = this.getMessagesForChat(chatId);
+    return msgs.length > 0 ? msgs[msgs.length - 1] : null;
+  }
+
   public saveMessage(chatId: string, message: StoredLocalMessage): void {
     const storage = this.getStorage();
     if (!storage) return;
-    const existing = this.getMessagesForChat(chatId);
+    const normChat = normalizePersonalId(chatId);
+    const bareChat = normChat.startsWith('ID:') ? normChat.substring(3) : normChat;
+    const existing = this.getMessagesForChat(normChat);
     // deduplicate by id
     const filtered = existing.filter((m) => m.id !== message.id);
     filtered.push(message);
-    storage.setItem(`${STORAGE_KEYS.MESSAGES}_${chatId}`, JSON.stringify(filtered));
+    const serialized = JSON.stringify(filtered);
+    storage.setItem(`${STORAGE_KEYS.MESSAGES}_${normChat}`, serialized);
+    if (bareChat !== normChat) {
+      storage.setItem(`${STORAGE_KEYS.MESSAGES}_${bareChat}`, serialized);
+    }
   }
 
   public updateMessage(chatId: string, messageId: string, updater: (msg: StoredLocalMessage) => StoredLocalMessage): void {
     const storage = this.getStorage();
     if (!storage) return;
-    const existing = this.getMessagesForChat(chatId);
+    const normChat = normalizePersonalId(chatId);
+    const bareChat = normChat.startsWith('ID:') ? normChat.substring(3) : normChat;
+    const existing = this.getMessagesForChat(normChat);
     const updated = existing.map((m) => (m.id === messageId ? updater(m) : m));
-    storage.setItem(`${STORAGE_KEYS.MESSAGES}_${chatId}`, JSON.stringify(updated));
+    const serialized = JSON.stringify(updated);
+    storage.setItem(`${STORAGE_KEYS.MESSAGES}_${normChat}`, serialized);
+    if (bareChat !== normChat) {
+      storage.setItem(`${STORAGE_KEYS.MESSAGES}_${bareChat}`, serialized);
+    }
   }
 
   public deleteMessageForSelf(chatId: string, messageId: string): void {
     const storage = this.getStorage();
     if (!storage) return;
-    const existing = this.getMessagesForChat(chatId);
+    const normChat = normalizePersonalId(chatId);
+    const bareChat = normChat.startsWith('ID:') ? normChat.substring(3) : normChat;
+    const existing = this.getMessagesForChat(normChat);
     const filtered = existing.filter((m) => m.id !== messageId);
-    storage.setItem(`${STORAGE_KEYS.MESSAGES}_${chatId}`, JSON.stringify(filtered));
+    const serialized = JSON.stringify(filtered);
+    storage.setItem(`${STORAGE_KEYS.MESSAGES}_${normChat}`, serialized);
+    if (bareChat !== normChat) {
+      storage.setItem(`${STORAGE_KEYS.MESSAGES}_${bareChat}`, serialized);
+    }
   }
 
   /**
@@ -172,8 +205,13 @@ class LocalVault {
   public clearChat(chatId: string): void {
     const storage = this.getStorage();
     if (!storage) return;
-    storage.removeItem(`${STORAGE_KEYS.MESSAGES}_${chatId}`);
-    this.deleteSession(chatId);
+    const normChat = normalizePersonalId(chatId);
+    const bareChat = normChat.startsWith('ID:') ? normChat.substring(3) : normChat;
+    storage.removeItem(`${STORAGE_KEYS.MESSAGES}_${normChat}`);
+    if (bareChat !== normChat) {
+      storage.removeItem(`${STORAGE_KEYS.MESSAGES}_${bareChat}`);
+    }
+    this.deleteSession(normChat);
   }
 
   /**
@@ -206,7 +244,15 @@ class LocalVault {
   public getSession(peerId: string): RatchetSessionState | null {
     const storage = this.getStorage();
     if (!storage) return null;
-    const raw = storage.getItem(`${STORAGE_KEYS.SESSIONS}_${peerId}`);
+    const normPeer = normalizePersonalId(peerId);
+    const barePeer = normPeer.startsWith('ID:') ? normPeer.substring(3) : normPeer;
+    let raw = storage.getItem(`${STORAGE_KEYS.SESSIONS}_${normPeer}`);
+    if (!raw && barePeer !== normPeer) {
+      raw = storage.getItem(`${STORAGE_KEYS.SESSIONS}_${barePeer}`);
+    }
+    if (!raw && !normPeer.startsWith('ID:')) {
+      raw = storage.getItem(`${STORAGE_KEYS.SESSIONS}_ID:${normPeer}`);
+    }
     if (!raw) return null;
     try {
       return JSON.parse(raw);
@@ -218,13 +264,24 @@ class LocalVault {
   public saveSession(peerId: string, sessionState: RatchetSessionState): void {
     const storage = this.getStorage();
     if (!storage) return;
-    storage.setItem(`${STORAGE_KEYS.SESSIONS}_${peerId}`, JSON.stringify(sessionState));
+    const normPeer = normalizePersonalId(peerId);
+    const barePeer = normPeer.startsWith('ID:') ? normPeer.substring(3) : normPeer;
+    const serialized = JSON.stringify(sessionState);
+    storage.setItem(`${STORAGE_KEYS.SESSIONS}_${normPeer}`, serialized);
+    if (barePeer !== normPeer) {
+      storage.setItem(`${STORAGE_KEYS.SESSIONS}_${barePeer}`, serialized);
+    }
   }
 
   public deleteSession(peerId: string): void {
     const storage = this.getStorage();
     if (!storage) return;
-    storage.removeItem(`${STORAGE_KEYS.SESSIONS}_${peerId}`);
+    const normPeer = normalizePersonalId(peerId);
+    const barePeer = normPeer.startsWith('ID:') ? normPeer.substring(3) : normPeer;
+    storage.removeItem(`${STORAGE_KEYS.SESSIONS}_${normPeer}`);
+    if (barePeer !== normPeer) {
+      storage.removeItem(`${STORAGE_KEYS.SESSIONS}_${barePeer}`);
+    }
   }
 
   // --- Blocked Users ---
@@ -261,27 +318,49 @@ class LocalVault {
   public isSafetyNumberVerified(peerId: string): boolean {
     const storage = this.getStorage();
     if (!storage) return false;
-    const raw = storage.getItem(`${STORAGE_KEYS.SAFETY_NUMBERS}_${peerId}`);
+    const normPeer = normalizePersonalId(peerId);
+    const barePeer = normPeer.startsWith('ID:') ? normPeer.substring(3) : normPeer;
+    const raw = storage.getItem(`${STORAGE_KEYS.SAFETY_NUMBERS}_${normPeer}`) ||
+      (barePeer !== normPeer ? storage.getItem(`${STORAGE_KEYS.SAFETY_NUMBERS}_${barePeer}`) : null);
     return raw === 'true';
   }
 
   public setSafetyNumberVerified(peerId: string, verified: boolean): void {
     const storage = this.getStorage();
     if (!storage) return;
-    storage.setItem(`${STORAGE_KEYS.SAFETY_NUMBERS}_${peerId}`, String(verified));
+    const normPeer = normalizePersonalId(peerId);
+    const barePeer = normPeer.startsWith('ID:') ? normPeer.substring(3) : normPeer;
+    storage.setItem(`${STORAGE_KEYS.SAFETY_NUMBERS}_${normPeer}`, String(verified));
+    if (barePeer !== normPeer) {
+      storage.setItem(`${STORAGE_KEYS.SAFETY_NUMBERS}_${barePeer}`, String(verified));
+    }
   }
 
   // --- User Private Cryptographic Key Bundles ---
   public saveUserKeyBundle(personalId: string, bundle: { identityKeyPriv: string; signedPreKeyPriv: string }): void {
     const storage = this.getStorage();
     if (!storage) return;
-    storage.setItem(`${STORAGE_KEYS.IDENTITY_KEYS}_${personalId}`, JSON.stringify(bundle));
+    const normId = normalizePersonalId(personalId);
+    const bareId = normId.startsWith('ID:') ? normId.substring(3) : normId;
+    const serialized = JSON.stringify(bundle);
+    storage.setItem(`${STORAGE_KEYS.IDENTITY_KEYS}_${normId}`, serialized);
+    if (bareId !== normId) {
+      storage.setItem(`${STORAGE_KEYS.IDENTITY_KEYS}_${bareId}`, serialized);
+    }
   }
 
   public getUserKeyBundle(personalId: string): { identityKeyPriv: string; signedPreKeyPriv: string } | null {
     const storage = this.getStorage();
     if (!storage) return null;
-    const raw = storage.getItem(`${STORAGE_KEYS.IDENTITY_KEYS}_${personalId}`);
+    const normId = normalizePersonalId(personalId);
+    const bareId = normId.startsWith('ID:') ? normId.substring(3) : normId;
+    let raw = storage.getItem(`${STORAGE_KEYS.IDENTITY_KEYS}_${normId}`);
+    if (!raw && bareId !== normId) {
+      raw = storage.getItem(`${STORAGE_KEYS.IDENTITY_KEYS}_${bareId}`);
+    }
+    if (!raw && !normId.startsWith('ID:')) {
+      raw = storage.getItem(`${STORAGE_KEYS.IDENTITY_KEYS}_ID:${normId}`);
+    }
     if (!raw) return null;
     try {
       return JSON.parse(raw);
@@ -291,11 +370,12 @@ class LocalVault {
   }
 
   public getSignedPreKeyPriv(personalId: string): string {
-    const bundle = this.getUserKeyBundle(personalId);
+    const normId = normalizePersonalId(personalId);
+    const bundle = this.getUserKeyBundle(normId);
     if (bundle && bundle.signedPreKeyPriv) {
       return bundle.signedPreKeyPriv;
     }
-    return getFallbackPreKeyPriv(personalId);
+    return getFallbackPreKeyPriv(normId);
   }
 
   // --- Contact Nicknames ---
@@ -312,18 +392,21 @@ class LocalVault {
   }
 
   public getNickname(personalId: string): string | null {
+    const normId = normalizePersonalId(personalId);
     const map = this.getNicknames();
-    return map[personalId] || null;
+    return map[normId] || map[personalId] || null;
   }
 
   public setNickname(personalId: string, nickname: string | null): void {
     const storage = this.getStorage();
     if (!storage) return;
+    const normId = normalizePersonalId(personalId);
     const map = this.getNicknames();
     if (!nickname || nickname.trim() === '') {
+      delete map[normId];
       delete map[personalId];
     } else {
-      map[personalId] = nickname.trim().slice(0, 48);
+      map[normId] = nickname.trim().slice(0, 48);
     }
     storage.setItem(STORAGE_KEYS.NICKNAMES, JSON.stringify(map));
 

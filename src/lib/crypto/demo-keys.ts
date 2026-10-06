@@ -3,6 +3,8 @@
  * In production, private keys are generated in the browser and stored in IndexedDB.
  */
 
+import { normalizePersonalId } from './id-generator';
+
 export const DEMO_PREKEYS_PRIV: Record<string, string> = {
   'ID:ALIC8821':
     'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg8kH/mYdnyurgF/BrFXe5w23TwBIkM4JxT2Mw+EgW5syhRANCAATvO9hIPFfezUosQnQ0IcYQEt2kI4rI0Vep39YuiPzGGpvzqhl3O/SilbkFbKEKcsbkDBee6yEzjfTtpQHYocbB',
@@ -49,10 +51,11 @@ export const FALLBACK_PREKEYS = [
  * Returns a deterministic fallback keypair based on personalId.
  */
 export function getFallbackPreKeyPair(personalId: string): { pub: string; priv: string } {
-  if (!personalId) return FALLBACK_PREKEYS[0];
+  const norm = normalizePersonalId(personalId);
+  if (!norm) return FALLBACK_PREKEYS[0];
   let sum = 0;
-  for (let i = 0; i < personalId.length; i++) {
-    sum = (sum * 31 + personalId.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < norm.length; i++) {
+    sum = (sum * 31 + norm.charCodeAt(i)) >>> 0;
   }
   const idx = sum % FALLBACK_PREKEYS.length;
   return FALLBACK_PREKEYS[idx];
@@ -62,19 +65,21 @@ export function getFallbackPreKeyPair(personalId: string): { pub: string; priv: 
  * Deterministic public prekey for any personal ID.
  */
 export function getFallbackPreKeyPub(personalId: string): string {
-  if (DEMO_PREKEYS_PUB[personalId]) {
-    return DEMO_PREKEYS_PUB[personalId];
+  const norm = normalizePersonalId(personalId);
+  if (norm && DEMO_PREKEYS_PUB[norm]) {
+    return DEMO_PREKEYS_PUB[norm];
   }
-  return getFallbackPreKeyPair(personalId).pub;
+  return getFallbackPreKeyPair(norm).pub;
 }
 
 /**
  * Deterministic private prekey matching getFallbackPreKeyPub.
  */
 export function getFallbackPreKeyPriv(personalId: string): string {
-  if (DEMO_PREKEYS_PRIV[personalId]) {
-    return DEMO_PREKEYS_PRIV[personalId];
+  const norm = normalizePersonalId(personalId);
+  if (norm && DEMO_PREKEYS_PRIV[norm]) {
+    return DEMO_PREKEYS_PRIV[norm];
   }
-  return getFallbackPreKeyPair(personalId).priv;
+  return getFallbackPreKeyPair(norm).priv;
 }
 

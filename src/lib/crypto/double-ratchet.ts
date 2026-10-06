@@ -21,6 +21,7 @@ import {
   stringToBytes,
 } from './primitives';
 import { EncryptedPacket, PlaintextMessagePayload } from './types';
+import { normalizePersonalId } from './id-generator';
 
 export interface RatchetSessionState {
   peerId: string;
@@ -155,7 +156,9 @@ export class DoubleRatchetSession {
     const iv = randomBytes(12);
 
     // Authenticated Associated Data (AAD) binds sender, recipient, sequence number and ephemeral key
-    const aadString = `${senderId}:${recipientId}:${sequenceNumber}:${this.state.ourEphemeralPublicKeyBase64}`;
+    const normSender = normalizePersonalId(senderId);
+    const normRecipient = normalizePersonalId(recipientId);
+    const aadString = `${normSender}:${normRecipient}:${sequenceNumber}:${this.state.ourEphemeralPublicKeyBase64}`;
     const aadBytes = stringToBytes(aadString);
 
     const serializedPayload = JSON.stringify(payload);
@@ -174,8 +177,8 @@ export class DoubleRatchetSession {
 
     return {
       packetId: `pkt_${randomBytes(8).reduce((acc, b) => acc + b.toString(16).padStart(2, '0'), '')}`,
-      senderId,
-      recipientId,
+      senderId: normSender,
+      recipientId: normRecipient,
       type,
       ephemeralPublicKey: this.state.ourEphemeralPublicKeyBase64,
       sequenceNumber,
@@ -214,7 +217,9 @@ export class DoubleRatchetSession {
 
     const iv = base64ToBytes(packet.iv);
     const ciphertext = base64ToBytes(packet.ciphertext);
-    const aadString = `${packet.senderId}:${packet.recipientId}:${packet.sequenceNumber}:${packet.ephemeralPublicKey}`;
+    const normSender = normalizePersonalId(packet.senderId);
+    const normRecipient = normalizePersonalId(packet.recipientId);
+    const aadString = `${normSender}:${normRecipient}:${packet.sequenceNumber}:${packet.ephemeralPublicKey}`;
     const aadBytes = stringToBytes(aadString);
 
     const decryptedBytes = await decryptAESGCM(

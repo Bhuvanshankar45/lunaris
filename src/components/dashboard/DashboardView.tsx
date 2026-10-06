@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { AppScreen, PeerContact, UserProfile } from '@/types';
 import { Avatar } from '../ui/Avatar';
+import { vault } from '@/lib/storage/vault';
 
 interface DashboardViewProps {
   currentUser: UserProfile;
@@ -26,6 +27,7 @@ interface DashboardViewProps {
   onNavigate: (screen: AppScreen) => void;
   onStartChat: (peer: PeerContact) => void;
   onOpenAddConnection: () => void;
+  lastMessageTime?: number;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -35,6 +37,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigate,
   onStartChat,
   onOpenAddConnection,
+  lastMessageTime,
 }) => {
   const [copied, setCopied] = useState(false);
 
@@ -163,31 +166,61 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               {acceptedConnections.map(({ connectionId, peer }) => {
                 const displayName = peer.nickname || peer.displayName;
+                const lastMsg = vault.getLastMessageForChat(peer.personalId);
+                const hasIncoming = lastMsg && lastMsg.senderId === peer.personalId;
                 return (
                   <div
                     key={connectionId}
-                    className="p-4 rounded-2xl bg-[#E0E0D5] border border-[#CBCCC7] hover:border-[#B8AB90] transition-colors flex flex-col justify-between shadow-2xs"
+                    className="p-4 rounded-2xl bg-[#E0E0D5] border border-[#CBCCC7] hover:border-[#B8AB90] transition-colors flex flex-col justify-between shadow-2xs cursor-pointer group"
+                    onClick={() => onStartChat(peer)}
                   >
                     <div className="flex items-start gap-3 mb-3">
-                      <Avatar name={displayName} size="md" />
+                      <div className="relative">
+                        <Avatar name={displayName} size="md" />
+                        {hasIncoming && (
+                          <span className="absolute -top-1 -right-1 w-3 h-3 bg-[#476B4D] border-2 border-[#E0E0D5] rounded-full" />
+                        )}
+                      </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <h4 className="font-semibold text-xs sm:text-sm text-[#1C1E1B] truncate">{displayName}</h4>
-                          {peer.nickname && (
-                            <span className="text-[10px] text-[#6E746A] truncate">({peer.displayName})</span>
+                        <div className="flex items-center justify-between gap-1 min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0 truncate">
+                            <h4 className="font-semibold text-xs sm:text-sm text-[#1C1E1B] truncate">{displayName}</h4>
+                            {peer.nickname && (
+                              <span className="text-[10px] text-[#6E746A] truncate">({peer.displayName})</span>
+                            )}
+                          </div>
+                          {lastMsg && (
+                            <span className="text-[9px] font-mono text-[#6E746A] shrink-0">
+                              {new Date(lastMsg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
                           )}
                         </div>
-                        <p className="text-[10px] font-mono text-[#6E746A]">{peer.personalId}</p>
+                        <p className="text-[10px] font-mono text-[#6E746A] truncate">{peer.personalId}</p>
+                        {lastMsg ? (
+                          <p className={`text-[11px] truncate mt-1 ${hasIncoming ? 'font-semibold text-[#1C1E1B]' : 'text-[#6E746A]'}`}>
+                            {lastMsg.senderId === currentUser.personalId ? 'You: ' : ''}
+                            {lastMsg.file ? '📎 [Media File]' : lastMsg.text}
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-[#8A8F85] italic truncate mt-1">Encrypted chat ready</p>
+                        )}
                       </div>
                     </div>
 
                     <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#CBCCC7]/60">
                       <button
-                        onClick={() => onStartChat(peer)}
-                        className="flex-1 py-1.5 px-3 rounded-xl bg-[#D0CABA] hover:bg-[#CBCCC7] text-xs font-medium text-[#1C1E1B] flex items-center justify-center gap-1.5 transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onStartChat(peer);
+                        }}
+                        className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-medium flex items-center justify-center gap-1.5 transition-colors ${
+                          hasIncoming
+                            ? 'bg-[#476B4D] text-[#F8F8F4] hover:bg-[#3B5940]'
+                            : 'bg-[#D0CABA] hover:bg-[#CBCCC7] text-[#1C1E1B]'
+                        }`}
                       >
-                        <MessageSquare className="w-3.5 h-3.5 text-[#525C51]" />
-                        <span>Chat</span>
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>{hasIncoming ? 'New Message' : 'Chat'}</span>
                       </button>
                     </div>
                   </div>
